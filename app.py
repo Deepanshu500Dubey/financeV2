@@ -73,7 +73,7 @@ app.add_middleware(
 )
 
 # Base URL for dashboard links
-APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
+APP_BASE_URL = os.getenv("APP_BASE_URL")
 
 # ============================================================================
 # DATA MODELS (Enhanced with Approval Tracking)
