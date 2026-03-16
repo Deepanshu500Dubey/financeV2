@@ -1,0 +1,10 @@
+Entity,Bank_Name,Account_Number,GL_Account_Code,GL_Account_Name,Currency,GL_Balance_AUD,Statement_Balance_AUD,Variance_AUD,Variance_Type,Reconciliation_Status,Last_Reconciled_Date
+AUS01,Commonwealth Bank,1234-5678-9012,1010,Cash - CBA Operating,AUD,2895750.00,2880400.00,15350.00,Timing,Reconciled_With_Exceptions,2026-02-28
+AUS01,Westpac Banking,2345-6789-0123,1020,Cash - Westpac Payroll,AUD,469965.00,469965.00,0.00,None,Reconciled,2026-02-28
+AUS01,ANZ Bank,3456-7890-1234,1030,Cash - ANZ Investment,AUD,5674200.00,5674200.00,0.00,None,Reconciled,2026-02-28
+NZL01,ANZ New Zealand,4567-8901-2345,1010,Cash - ANZ NZ Operating,NZD,900130.00,900130.00,0.00,None,Reconciled_With_Exceptions,2026-02-28
+NZL01,BNZ,5678-9012-3456,1020,Cash - BNZ Payroll,NZD,189970.00,189970.00,0.00,None,Reconciled,2026-02-28
+SGP01,DBS Bank,6789-0123-4567,1010,Cash - DBS Operating,SGD,1350230.00,1350230.00,0.00,None,Reconciled_With_Exceptions,2026-02-28
+SGP01,OCBC Bank,7890-1234-5678,1020,Cash - OCBC Payroll,SGD,230085.00,230085.00,0.00,None,Reconciled,2026-02-28
+UK01,HSBC UK,8901-2345-6789,1010,Cash - HSBC Operating,GBP,1030940.00,1030940.00,0.00,None,Reconciled_With_Exceptions,2026-02-28
+UK01,Barclays,9012-3456-7890,1020,Cash - Barclays Payroll,GBP,169953.00,169953.00,0.00,None,Reconciled,2026-02-28

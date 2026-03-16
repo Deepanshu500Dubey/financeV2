@@ -1,0 +1,30 @@
+Txn_ID,Date,Description,Reference,Amount,Bank_Account,GL_Account_Code,Matched_GL_Txn_ID,Reconciliation_Status
+BANK001,2026-02-01,Opening Balance,OPEN-001,2456789.45,CBA-Operating,1010,,Opening
+BANK002,2026-02-03,Customer payment - Woolworths,INV-2026-0234,1245000.00,CBA-Operating,1100,TXN004081,Matched
+BANK003,2026-02-04,Customer payment - Coles,INV-2026-0235,987500.00,CBA-Operating,1100,TXN004082,Matched
+BANK004,2026-02-05,Transfer to Payroll Account,TRF-2026-001,-456000.00,CBA-Operating,1010,TXN004202,Matched
+BANK005,2026-02-06,Payment - Adobe software license,INV30892,-6049.77,CBA-Operating,5200,TXN000001,Matched
+BANK006,2026-02-07,Payment - Federal Express,INV73318,-27549.99,CBA-Operating,5610,TXN000002,Matched
+BANK007,2026-02-08,Payment - Hays recruitment,INV16599,-10916.04,CBA-Operating,5710,TXN000005,Matched
+BANK008,2026-02-09,Customer payment - Wesfarmers,INV-2026-0236,1567800.00,CBA-Operating,1100,TXN004083,Matched
+BANK009,2026-02-10,Payment - AWS cloud services,INV76628,-35651.07,CBA-Operating,5210,TXN000007,Matched
+BANK010,2026-02-11,Payment - LinkedIn Corp,INV96136,-25250.77,CBA-Operating,5920,TXN000008,Matched
+BANK011,2026-02-12,Payment - Atlassian,INV75382,-20636.72,CBA-Operating,5620,TXN000011,Matched
+BANK012,2026-02-13,Payment - Oracle license,INV23573,-32899.21,CBA-Operating,5810,TXN000012,Matched
+BANK013,2026-02-14,Customer payment - BHP,INV-2026-0237,2345000.00,CBA-Operating,1100,TXN004084,Matched
+BANK014,2026-02-15,Payment - BCG consulting,INV28111,-20432.77,CBA-Operating,5300,TXN000013,Matched
+BANK015,2026-02-16,Payment - Amazon Web Services,INV36201,-6625.17,CBA-Operating,5100,TXN000016,Matched
+BANK016,2026-02-17,Payment - MSFT license,INV57013,-9259.64,CBA-Operating,5910,TXN000017,Matched
+BANK017,2026-02-18,Payment - Accenture,INV60014,-31212.83,CBA-Operating,5400,TXN000018,Matched
+BANK018,2026-02-19,Payment - Oracle supplies,INV46583,-17036.20,CBA-Operating,5120,TXN000020,Matched
+BANK019,2026-02-20,Customer payment - CBA,INV-2026-0238,876500.00,CBA-Operating,1100,TXN004085,Matched
+BANK020,2026-02-21,Payment - McKinsey,INV76209,-43068.75,CBA-Operating,5900,TXN000022,Matched
+BANK021,2026-02-22,Payment - Workday,INV38632,-14964.89,CBA-Operating,5210,TXN000023,Matched
+BANK022,2026-02-23,Payment - KPMG,INV77411,-41018.98,CBA-Operating,5800,TXN000025,Matched
+BANK023,2026-02-24,Payment - Deloitte,INV43901,-25915.81,CBA-Operating,5900,TXN000028,Matched
+BANK024,2026-02-25,Customer payment - Telstra,INV-2026-0239,1234500.00,CBA-Operating,1100,TXN004086,Matched
+BANK025,2026-02-26,Payment - EY Australia,INV59992,-12740.13,CBA-Operating,5900,TXN000030,Matched
+BANK026,2026-02-27,Payment - DHL Express,INV49066,-43210.03,CBA-Operating,5800,TXN000031,Matched
+BANK027,2026-02-28,Monthly service fee,CHG-0228,-450.00,CBA-Operating,5900,,Unmatched
+BANK028,2026-02-28,Interest income,INT-0228,15678.45,CBA-Operating,4100,,Unmatched
+BANK029,2026-02-28,Returned check - ABC Corp,CHQ-45679,-15000.00,CBA-Operating,1100,TXN004087,NSF_Check

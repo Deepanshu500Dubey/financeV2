@@ -1,0 +1,29 @@
+JE_Number,JE_Date,Entity,Recon_Item_ID,GL_Account_Code,Account_Name,Debit_AUD,Credit_AUD,Description,Prepared_By,Approved_By,Status
+BANKREC-001,2026-02-29,AUS01,BRI-005,1010,Cash - CBA Operating,1250.00,0.00,Record interest earned - Feb 2026,AI_Agent,Auto_Approved,Posted
+BANKREC-001,2026-02-29,AUS01,BRI-005,4100,Interest Income,0.00,1250.00,Record interest earned - Feb 2026,AI_Agent,Auto_Approved,Posted
+BANKREC-002,2026-02-29,AUS01,BRI-004,5900,Bank Charges,850.00,0.00,Record duplicate bank charge (pending reversal),AI_Agent,Auto_Approved,Posted
+BANKREC-002,2026-02-29,AUS01,BRI-004,1010,Cash - CBA Operating,0.00,850.00,Record duplicate bank charge (pending reversal),AI_Agent,Auto_Approved,Posted
+BANKREC-003,2026-02-29,NZL01,BRI-010,1010,Cash - ANZ NZ Operating,450.00,0.00,Record interest earned - Feb 2026,AI_Agent,Auto_Approved,Posted
+BANKREC-003,2026-02-29,NZL01,BRI-010,4100,Interest Income,0.00,450.00,Record interest earned - Feb 2026,AI_Agent,Auto_Approved,Posted
+BANKREC-004,2026-02-29,NZL01,BRI-011,5900,Bank Charges,320.00,0.00,Record monthly account fee,AI_Agent,Auto_Approved,Posted
+BANKREC-004,2026-02-29,NZL01,BRI-011,1010,Cash - ANZ NZ Operating,0.00,320.00,Record monthly account fee,AI_Agent,Auto_Approved,Posted
+BANKREC-005,2026-02-29,SGP01,BRI-014,1010,Cash - DBS Operating,680.00,0.00,Record interest earned - Feb 2026,AI_Agent,Auto_Approved,Posted
+BANKREC-005,2026-02-29,SGP01,BRI-014,4100,Interest Income,0.00,680.00,Record interest earned - Feb 2026,AI_Agent,Auto_Approved,Posted
+BANKREC-006,2026-02-29,SGP01,BRI-015,5900,Bank Charges,450.00,0.00,Record transaction fees,AI_Agent,Auto_Approved,Posted
+BANKREC-006,2026-02-29,SGP01,BRI-015,1010,Cash - DBS Operating,0.00,450.00,Record transaction fees,AI_Agent,Auto_Approved,Posted
+BANKREC-007,2026-02-29,UK01,BRI-019,1010,Cash - HSBC Operating,520.00,0.00,Record interest earned - Feb 2026,AI_Agent,Auto_Approved,Posted
+BANKREC-007,2026-02-29,UK01,BRI-019,4100,Interest Income,0.00,520.00,Record interest earned - Feb 2026,AI_Agent,Auto_Approved,Posted
+BANKREC-008,2026-02-29,UK01,BRI-020,5900,Bank Charges,580.00,0.00,Record international transfer fees,AI_Agent,Auto_Approved,Posted
+BANKREC-008,2026-02-29,UK01,BRI-020,1010,Cash - HSBC Operating,0.00,580.00,Record international transfer fees,AI_Agent,Auto_Approved,Posted
+BANKREC-009,2026-02-29,AUS01,BRI-022,1010,Cash - CBA Operating,0.00,15000.00,Reverse NSF check deposit,AI_Agent,CFO_Pending,Draft
+BANKREC-009,2026-02-29,AUS01,BRI-022,1100,Accounts Receivable,15000.00,0.00,Reinstate AR for NSF check,AI_Agent,CFO_Pending,Draft
+BANKREC-010,2026-02-29,AUS01,BRI-023,1010,Cash - CBA Operating,156000.00,0.00,Record IC wire transfer from UK01,AI_Agent,CFO_Pending,Draft
+BANKREC-010,2026-02-29,AUS01,BRI-023,1150,Intercompany Receivables,0.00,156000.00,Record IC wire transfer from UK01,AI_Agent,CFO_Pending,Draft
+BANKREC-011,2026-02-29,SGP01,BRI-024,2150,Intercompany Payables,156000.00,0.00,Record IC wire transfer to AUS01,AI_Agent,CFO_Pending,Draft
+BANKREC-011,2026-02-29,SGP01,BRI-024,1010,Cash - DBS Operating,0.00,156000.00,Record IC wire transfer to AUS01,AI_Agent,CFO_Pending,Draft
+BANKREC-012,2026-02-29,AUS01,BRI-007,2010,Accrued Expenses,125000.00,0.00,Reclassify outstanding check to accrued expenses,AI_Agent,CFO_Pending,Draft
+BANKREC-012,2026-02-29,AUS01,BRI-007,2000,Accounts Payable,0.00,125000.00,Reverse original AP for outstanding check,AI_Agent,CFO_Pending,Draft
+BANKREC-013,2026-02-29,SGP01,BRI-013,2010,Accrued Expenses,112000.00,0.00,Reclassify outstanding check to accrued expenses,AI_Agent,CFO_Pending,Draft
+BANKREC-013,2026-02-29,SGP01,BRI-013,2000,Accounts Payable,0.00,112000.00,Reverse original AP for outstanding check,AI_Agent,CFO_Pending,Draft
+BANKREC-014,2026-02-29,UK01,BRI-018,2010,Accrued Expenses,245000.00,0.00,Reclassify outstanding check to accrued expenses,AI_Agent,CFO_Pending,Draft
+BANKREC-014,2026-02-29,UK01,BRI-018,2000,Accounts Payable,0.00,245000.00,Reverse original AP for outstanding check,AI_Agent,CFO_Pending,Draft
