@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, EmailStr
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timedelta
 from enum import Enum
 import csv
@@ -21,6 +21,7 @@ import logging
 import io
 import base64
 import tempfile
+import json
 
 # Email and PDF libraries
 from dotenv import load_dotenv
@@ -73,7 +74,7 @@ app.add_middleware(
 )
 
 # Base URL for dashboard links
-APP_BASE_URL = os.getenv("APP_BASE_URL")
+APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
 
 # ============================================================================
 # DATA MODELS (Enhanced with Approval Tracking)
@@ -232,6 +233,172 @@ class EmailReportResponse(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.now)
 
 # ============================================================================
+# APPROVAL REGISTRY - Tracks ALL approvals generated during the session
+# ============================================================================
+
+class ApprovalRegistry:
+    """Tracks all approvals generated and their status"""
+    
+    def __init__(self):
+        self.generated_approvals = {}  # Dict[token, approval_info]
+        self.registry_file = 'approval_registry.csv'
+        self._load_registry()
+    
+    def _load_registry(self):
+        """Load existing registry from CSV if available"""
+        if os.path.exists(self.registry_file):
+            try:
+                with open(self.registry_file, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        token = row.pop('token')
+                        self.generated_approvals[token] = row
+                logger.info(f"📋 Loaded {len(self.generated_approvals)} approvals from registry")
+            except Exception as e:
+                logger.error(f"Error loading registry: {e}")
+    
+    def _save_registry(self):
+        """Save registry to CSV for persistence"""
+        if not self.generated_approvals:
+            return
+        
+        try:
+            fieldnames = ['token', 'type', 'description', 'amount', 'created_at', 
+                         'fiscal_period', 'entity', 'status', 'decision', 'processed_at',
+                         'metadata_summary']
+            
+            with open(self.registry_file, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                
+                for token, info in self.generated_approvals.items():
+                    row = {'token': token, **info}
+                    writer.writerow(row)
+            
+            logger.info(f"💾 Saved {len(self.generated_approvals)} approvals to registry")
+        except Exception as e:
+            logger.error(f"Error saving registry: {e}")
+    
+    def register_approval(self, token: str, approval_item: ApprovalItem):
+        """Register a newly generated approval"""
+        self.generated_approvals[token] = {
+            'type': approval_item.type,
+            'description': approval_item.description[:100],
+            'amount': str(approval_item.amount) if approval_item.amount else '',
+            'created_at': datetime.now().isoformat(),
+            'fiscal_period': approval_item.metadata.get('fiscal_period', '2026-02') if approval_item.metadata else '2026-02',
+            'entity': approval_item.metadata.get('entity', 'AUS01') if approval_item.metadata else 'AUS01',
+            'status': 'PENDING',
+            'metadata_summary': self._summarize_metadata(approval_item.metadata)
+        }
+        self._save_registry()
+        logger.info(f"📝 Registered approval {token} of type {approval_item.type}")
+    
+    def update_approval_status(self, token: str, status: str, decision: str = None):
+        """Update status when approval is processed"""
+        if token in self.generated_approvals:
+            self.generated_approvals[token]['status'] = status
+            if decision:
+                self.generated_approvals[token]['decision'] = decision
+                self.generated_approvals[token]['processed_at'] = datetime.now().isoformat()
+            self._save_registry()
+    
+    def _summarize_metadata(self, metadata: dict) -> str:
+        """Create a brief summary of metadata for tracking"""
+        if not metadata:
+            return ''
+        
+        important_fields = []
+        
+        # Check for transaction IDs
+        if 'transaction_id' in metadata:
+            important_fields.append(f"txn:{metadata['transaction_id']}")
+        if 'accrual_id' in metadata:
+            important_fields.append(f"accrual:{metadata['accrual_id']}")
+        if 'item_id' in metadata:
+            important_fields.append(f"item:{metadata['item_id']}")
+        if 'invoice_number' in metadata:
+            important_fields.append(f"inv:{metadata['invoice_number']}")
+        if 'entry_id' in metadata:
+            important_fields.append(f"je:{metadata['entry_id']}")
+        if 'variance_id' in metadata:
+            important_fields.append(f"var:{metadata['variance_id']}")
+        
+        # Check for counts
+        if 'count' in metadata:
+            important_fields.append(f"count:{metadata['count']}")
+        
+        return '; '.join(important_fields)[:200]
+    
+    def get_pending_approvals(self, fiscal_period: str = None) -> List[Dict]:
+        """Get all pending approvals"""
+        pending = []
+        for token, info in self.generated_approvals.items():
+            if info.get('status') == 'PENDING':
+                if not fiscal_period or info.get('fiscal_period') == fiscal_period:
+                    pending.append({'token': token, **info})
+        return pending
+    
+    def get_processed_approvals(self, fiscal_period: str = None) -> List[Dict]:
+        """Get all processed (approved/rejected) approvals"""
+        processed = []
+        for token, info in self.generated_approvals.items():
+            if info.get('status') in ['APPROVED', 'REJECTED', 'ASSIGNED']:
+                if not fiscal_period or info.get('fiscal_period') == fiscal_period:
+                    processed.append({'token': token, **info})
+        return processed
+    
+    def get_approval_summary(self, fiscal_period: str = None) -> Dict:
+        """Get summary of approvals by type and status"""
+        summary = {
+            'total_generated': 0,
+            'pending': 0,
+            'approved': 0,
+            'rejected': 0,
+            'assigned': 0,
+            'by_type': {},
+            'by_status': {}
+        }
+        
+        for token, info in self.generated_approvals.items():
+            if fiscal_period and info.get('fiscal_period') != fiscal_period:
+                continue
+            
+            summary['total_generated'] += 1
+            status = info.get('status', 'UNKNOWN')
+            
+            # Count by status
+            summary['by_status'][status] = summary['by_status'].get(status, 0) + 1
+            if status == 'PENDING':
+                summary['pending'] += 1
+            elif status == 'APPROVED':
+                summary['approved'] += 1
+            elif status == 'REJECTED':
+                summary['rejected'] += 1
+            elif status == 'ASSIGNED':
+                summary['assigned'] += 1
+            
+            # Count by type
+            approval_type = info.get('type', 'Unknown')
+            if approval_type not in summary['by_type']:
+                summary['by_type'][approval_type] = {'total': 0, 'pending': 0, 'approved': 0, 'rejected': 0, 'assigned': 0}
+            
+            summary['by_type'][approval_type]['total'] += 1
+            summary['by_type'][approval_type][status.lower()] = summary['by_type'][approval_type].get(status.lower(), 0) + 1
+        
+        return summary
+    
+    def verify_all_approvals_processed(self, fiscal_period: str = None) -> Tuple[bool, List]:
+        """Verify that all generated approvals have been processed"""
+        pending = self.get_pending_approvals(fiscal_period)
+        if pending:
+            return False, pending
+        return True, []
+
+# Initialize the registry
+approval_registry = ApprovalRegistry()
+
+# ============================================================================
 # DATA STORES (In-memory for demo - use database in production)
 # ============================================================================
 
@@ -246,7 +413,6 @@ assignees_db = [
     {"email": "steny.sebastian@octanesolutions.com.au", "name": "Steny Sebastian", "role": "Senior Accountant"},
     {"email": "alan.cheeramvelil@octanesolutions.com.au", "name": "Alan Francis Cheeramvelil", "role": "Finance Manager"},
     {"email": "deepanshu.dubey@octanesolutions.com.au", "name": "Deepanshu Dubey", "role": "Treasury Analyst"},
-    
 ]
 
 # ============================================================================
@@ -294,7 +460,8 @@ def create_approval_item(
     amount: Optional[float] = None,
     account: Optional[str] = None,
     cost_center: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None,
+    fiscal_period: str = "2026-02"
 ) -> ApprovalItem:
     """Create and store a new approval item"""
     item_id = str(uuid.uuid4())[:8]
@@ -308,8 +475,10 @@ def create_approval_item(
                 clean_metadata[k] = v.isoformat()
             else:
                 clean_metadata[k] = v
+        # Add fiscal_period to metadata
+        clean_metadata['fiscal_period'] = fiscal_period
     else:
-        clean_metadata = {}
+        clean_metadata = {'fiscal_period': fiscal_period}
     
     item = ApprovalItem(
         id=item_id,
@@ -324,7 +493,11 @@ def create_approval_item(
     )
     
     pending_approvals[token] = item
-    logger.info(f"Created approval item: {item_type} - {item_id} (Token: {token})")
+    
+    # REGISTER IN THE REGISTRY
+    approval_registry.register_approval(token, item)
+    
+    logger.info(f"Created approval item: {item_type} - {item_id} (Token: {token}) for period {fiscal_period}")
     return item
 
 def get_approval_links(token: str) -> Dict[str, str]:
@@ -1128,6 +1301,7 @@ def root():
                     <a href="/docs" class="link">📚 API Documentation</a>
                     <a href="/health" class="link">🔍 Health Check</a>
                     <a href="/approvals/history" class="link">📋 Approval History</a>
+                    <a href="/approvals/check_status/2026-02" class="link">✅ Check Approval Status</a>
                 </div>
                 
                 <p class="version">Version 3.0.0 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
@@ -1153,7 +1327,8 @@ def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "pending_approvals": len(pending_approvals)
+        "pending_approvals": len(pending_approvals),
+        "registered_approvals": len(approval_registry.generated_approvals)
     }
 
 # ============================================================================
@@ -1613,6 +1788,7 @@ async def dashboard_home():
                 <button class="btn btn-danger" onclick="rejectAll()">❌ Reject All</button>
                 <button class="btn btn-primary" onclick="selectAll()">🔲 Select All</button>
                 <button class="btn btn-warning" onclick="clearSelection()">🔄 Clear Selection</button>
+                <a href="/approvals/check_status/2026-02" class="btn btn-assign" target="_blank">📊 Check Status</a>
             </div>
             
             <div>
@@ -1626,6 +1802,7 @@ async def dashboard_home():
                 <a href="/cfo/financial_dashboard" target="_blank">💰 CFO Dashboard</a>
                 <a href="/reports/email/preview" target="_blank">📧 Email Reports</a>
                 <a href="/health" target="_blank">Health Check</a>
+                <a href="/approvals/check_status/2026-02" target="_blank">✅ Approval Status</a>
                 <p style="margin-top: 20px;">Finance Month-End Close AI Agent v3.0.0</p>
             </div>
         </div>
@@ -2567,7 +2744,15 @@ async def decide_approval(
     history_record['reviewer'] = reviewer
     history_record['comments'] = comments
     history_record['decision'] = 'approved' if approved else 'rejected'
+    history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-02') if item.metadata else '2026-02'
     approval_history.append(history_record)
+    
+    # UPDATE REGISTRY
+    approval_registry.update_approval_status(
+        token, 
+        item.status.value,
+        decision='approved' if approved else 'rejected'
+    )
     
     # Remove from pending
     del pending_approvals[token]
@@ -2648,7 +2833,15 @@ async def batch_approve(request: ApprovalBatchRequest):
             history_record['reviewer'] = request.reviewer
             history_record['comments'] = request.comments
             history_record['decision'] = 'approved' if request.approved else 'rejected'
+            history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-02') if item.metadata else '2026-02'
             approval_history.append(history_record)
+            
+            # UPDATE REGISTRY
+            approval_registry.update_approval_status(
+                token,
+                item.status.value,
+                decision='approved' if request.approved else 'rejected'
+            )
             
             del pending_approvals[token]
             results.append({"token": token, "status": "success", "decision": request.approved})
@@ -2700,7 +2893,15 @@ async def approve_all_pending(
             history_record['reviewer'] = reviewer
             history_record['comments'] = comments
             history_record['decision'] = 'approved'
+            history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-02') if item.metadata else '2026-02'
             approval_history.append(history_record)
+            
+            # UPDATE REGISTRY
+            approval_registry.update_approval_status(
+                token,
+                item.status.value,
+                decision='approved'
+            )
             
             del pending_approvals[token]
             results.append({"token": token, "status": "success"})
@@ -2753,7 +2954,15 @@ async def reject_all_pending(
             history_record['reviewer'] = reviewer
             history_record['comments'] = comments
             history_record['decision'] = 'rejected'
+            history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-02') if item.metadata else '2026-02'
             approval_history.append(history_record)
+            
+            # UPDATE REGISTRY
+            approval_registry.update_approval_status(
+                token,
+                item.status.value,
+                decision='rejected'
+            )
             
             del pending_approvals[token]
             results.append({"token": token, "status": "success"})
@@ -2866,12 +3075,16 @@ async def assign_approval_item(request: ApprovalAssignmentRequest):
     item.assigned_at = datetime.now()
     item.status = ApprovalStatus.ASSIGNED
     
+    # UPDATE REGISTRY
+    approval_registry.update_approval_status(request.token, 'ASSIGNED')
+    
     # Add to history
     history_record = item.dict()
     history_record['processed_at'] = datetime.now().isoformat()
     history_record['assigner'] = request.assigner
     history_record['assigned_to'] = request.assignee_email
     history_record['decision'] = 'assigned'
+    history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-02') if item.metadata else '2026-02'
     approval_history.append(history_record)
     
     # Send email notification to assignee
@@ -2949,6 +3162,45 @@ async def assign_approval_item(request: ApprovalAssignmentRequest):
         "message": f"Item assigned to {assignee_name}. {email_result.get('message', '')}",
         "item": item.dict(),
         "email_status": email_result
+    }
+
+# ============================================================================
+# NEW ENDPOINT: CHECK APPROVAL STATUS
+# ============================================================================
+
+@app.get("/approvals/check_status/{fiscal_period}")
+async def check_approval_status(fiscal_period: str):
+    """
+    Check status of all approvals generated for a fiscal period
+    Useful before closing the period
+    """
+    summary = approval_registry.get_approval_summary(fiscal_period)
+    pending = approval_registry.get_pending_approvals(fiscal_period)
+    
+    # Also check if any approvals are still in pending_approvals
+    pending_in_memory = [
+        {"token": token, "type": item.type, "description": item.description}
+        for token, item in pending_approvals.items()
+        if item.metadata and item.metadata.get('fiscal_period') == fiscal_period
+    ]
+    
+    # Get processed from history
+    processed_in_history = [
+        record for record in approval_history
+        if record.get('fiscal_period') == fiscal_period
+    ]
+    
+    all_processed = len(pending) == 0 and len(pending_in_memory) == 0
+    
+    return {
+        "fiscal_period": fiscal_period,
+        "summary": summary,
+        "pending_in_registry": pending,
+        "pending_in_memory": pending_in_memory,
+        "processed_in_history": len(processed_in_history),
+        "all_approvals_processed": all_processed,
+        "can_close": all_processed,
+        "dashboard_url": f"{APP_BASE_URL}/dashboard"
     }
 
 # ============================================================================
@@ -3131,7 +3383,8 @@ def analyze_ar_variance(request: ARVarianceRequest):
                 metadata={
                     "count": len(missing_cost_centers),
                     "customers": list(set(r['Customer_Name'] for r in missing_cost_centers))[:5]
-                }
+                },
+                fiscal_period=request.fiscal_period
             )
             
             recommendations.append({
@@ -3170,8 +3423,10 @@ def analyze_ar_variance(request: ARVarianceRequest):
                 metadata={
                     "variance": variance,
                     "ar_subledger": total_outstanding,
-                    "gl_balance": gl_ar_balance
-                }
+                    "gl_balance": gl_ar_balance,
+                    "entry_id": "JE-2026-001"
+                },
+                fiscal_period=request.fiscal_period
             )
             
             recommendations.append({
@@ -3235,30 +3490,22 @@ def assign_cost_centers(request: CostCenterBatchRequest):
         # Create lookup for assignments
         assignment_map = {a.transaction_id: a for a in request.assignments}
         
-        # CHECK: Verify all assignments have been approved
+        # CHECK: Verify all assignments have been approved by checking registry
         unapproved_items = []
         approved_items = {}
         
         for txn_id in assignment_map:
-            # Find corresponding approval item
+            # Check registry for approval
             found_approved = False
-            for token, item in list(pending_approvals.items()):
-                if (item.type == "Missing Cost Center" and
-                    item.metadata and
-                    item.metadata.get('transaction_id') == txn_id):
-                    if item.status != ApprovalStatus.APPROVED:
-                        unapproved_items.append({
-                            'transaction_id': txn_id,
-                            'status': item.status.value,
-                            'approval_token': token,
-                            'dashboard_url': f"{APP_BASE_URL}/dashboard"
-                        })
-                    else:
-                        found_approved = True
-                        approved_items[txn_id] = token
+            for token, info in approval_registry.generated_approvals.items():
+                if (info.get('type') == "Missing Cost Center" and
+                    f"txn:{txn_id}" in info.get('metadata_summary', '') and
+                    info.get('status') == 'APPROVED'):
+                    found_approved = True
+                    approved_items[txn_id] = token
                     break
             
-            # Also check approval history for already processed items
+            # Also check in-memory history
             if not found_approved:
                 for hist_item in approval_history:
                     if (hist_item.get('type') == "Missing Cost Center" and
@@ -3267,7 +3514,7 @@ def assign_cost_centers(request: CostCenterBatchRequest):
                         found_approved = True
                         break
             
-            if not found_approved and txn_id not in [item['transaction_id'] for item in unapproved_items]:
+            if not found_approved:
                 unapproved_items.append({
                     'transaction_id': txn_id,
                     'status': 'not_found_or_not_approved',
@@ -3350,24 +3597,29 @@ def post_journal_entries(request: JournalEntryRequest):
         transactions = load_csv_data('Raw_GL_Export_With_CostCenters_Feb2026.csv')
         coa = load_coa()
         
-        # Check if entries are approved
+        # Check if entries are approved using registry
         unapproved_entries = []
         for entry in request.entries:
             if not entry.approved:
-                # Check if there's a pending approval in dashboard
-                found = False
-                for token, item in pending_approvals.items():
-                    if item.type == "Journal Entry" and item.metadata.get('entry_id') == entry.entry_id:
-                        found = True
-                        unapproved_entries.append({
-                            'entry_id': entry.entry_id,
-                            'status': 'pending_dashboard',
-                            'approval_token': token,
-                            'approval_links': get_approval_links(token)
-                        })
+                # Check registry for approval
+                found_approved = False
+                for token, info in approval_registry.generated_approvals.items():
+                    if (info.get('type') == "AR Variance Correction" and
+                        f"je:{entry.entry_id}" in info.get('metadata_summary', '') and
+                        info.get('status') == 'APPROVED'):
+                        found_approved = True
                         break
                 
-                if not found:
+                # Also check history
+                if not found_approved:
+                    for hist_item in approval_history:
+                        if (hist_item.get('type') == "AR Variance Correction" and
+                            hist_item.get('metadata', {}).get('entry_id') == entry.entry_id and
+                            hist_item.get('decision') == 'approved'):
+                            found_approved = True
+                            break
+                
+                if not found_approved:
                     unapproved_entries.append({
                         'entry_id': entry.entry_id,
                         'status': 'not_approved',
@@ -3520,7 +3772,8 @@ def budget_variance_analysis(request: BudgetVarianceRequest):
                         "actual": actual_amt,
                         "variance": variance,
                         "variance_percent": variance_pct
-                    }
+                    },
+                    fiscal_period=request.fiscal_period
                 )
                 
                 variance_item['requires_review'] = True
@@ -3681,76 +3934,105 @@ def cost_center_pl(request: CostCenterPLRequest):
 # TOOL 8: MONTH-END CLOSE (UPDATED to use helper function)
 # ============================================================================
 
+# ============================================================================
+# UPDATED TOOL 8: MONTH-END CLOSE (POC VERSION - Checks approvals only)
+# ============================================================================
+
 @app.post("/tools/close_period", response_model=ToolResponse)
 def close_period(
     request: MonthEndCloseRequest,
     background_tasks: BackgroundTasks
 ):
     """
-    Close the accounting period
+    Close the accounting period - POC VERSION
     
     This tool:
-    - Validates all exceptions are resolved
-    - Checks for any pending dashboard approvals
-    - Locks the period
+    - Checks that ALL generated approvals have been processed (ignores actual data)
+    - Locks the period based on approval status only
     - Generates final financial statements
     - Sends email reports if requested
     """
     try:
-        # Check for pending approvals first
-        if pending_approvals:
-            pending_list = [
-                {
-                    "type": item.type,
-                    "description": item.description,
-                    "token": token,
-                    "approval_links": get_approval_links(token)
-                }
-                for token, item in pending_approvals.items()
-                if item.status == ApprovalStatus.PENDING
-            ]
+        # ====================================================================
+        # STEP 1: Check if ALL generated approvals have been processed
+        # ====================================================================
+        all_processed, pending_list = approval_registry.verify_all_approvals_processed(request.fiscal_period)
+        
+        if not all_processed:
+            # Get summary for better error message
+            summary = approval_registry.get_approval_summary(request.fiscal_period)
+            
+            pending_by_type = {}
+            for p in pending_list:
+                p_type = p.get('type', 'Unknown')
+                pending_by_type[p_type] = pending_by_type.get(p_type, 0) + 1
             
             return ToolResponse(
                 success=False,
-                message=f"Cannot close period - {len(pending_list)} pending approvals require action. Visit {APP_BASE_URL}/dashboard",
+                message=f"Cannot close period - {len(pending_list)} approvals still pending! Please process all pending approvals before closing.",
                 data={
-                    'pending_approvals': pending_list,
+                    'pending_count': len(pending_list),
+                    'pending_by_type': pending_by_type,
+                    'summary': summary,
+                    'dashboard_url': f"{APP_BASE_URL}/dashboard",
+                    'action_required': 'Please process all pending approvals before closing'
+                }
+            )
+        
+        # ====================================================================
+        # STEP 2: Double-check no approvals in memory (backward compatibility)
+        # ====================================================================
+        memory_pending = [
+            {"token": token, "type": item.type}
+            for token, item in pending_approvals.items()
+            if item.metadata and item.metadata.get('fiscal_period') == request.fiscal_period
+        ]
+        
+        if memory_pending:
+            return ToolResponse(
+                success=False,
+                message=f"Cannot close period - {len(memory_pending)} approvals still in memory!",
+                data={
+                    'pending_in_memory': memory_pending,
                     'dashboard_url': f"{APP_BASE_URL}/dashboard"
                 }
             )
         
-        # Use helper function for trial balance
-        trial_balance_result = generate_trial_balance_data(
-            request.fiscal_period,
-            request.entity_code
-        )
+        # ====================================================================
+        # STEP 3: Generate final approval summary for reporting
+        # ====================================================================
+        summary = approval_registry.get_approval_summary(request.fiscal_period)
         
-        # Check for blocking exceptions
-        blocking_exceptions = [e for e in trial_balance_result.get('exceptions', []) if e.get('blocking', False)]
+        approved_count = summary.get('approved', 0)
+        rejected_count = summary.get('rejected', 0)
+        assigned_count = summary.get('assigned', 0)
         
-        if blocking_exceptions:
-            return ToolResponse(
-                success=False,
-                message="Cannot close period - blocking exceptions exist",
-                data={
-                    'blocking_exceptions': blocking_exceptions
-                }
-            )
+        # Generate approval summary for the close report
+        approval_summary_html = ""
+        by_type = summary.get('by_type', {})
+        for approval_type, counts in by_type.items():
+            approval_summary_html += f"<li><strong>{approval_type}:</strong> {counts.get('approved', 0)} approved, {counts.get('rejected', 0)} rejected, {counts.get('assigned', 0)} assigned (Total: {counts.get('total', 0)})</li>"
         
-        # Generate close summary
         close_summary = {
             'fiscal_period': request.fiscal_period,
             'entity_code': request.entity_code,
             'close_date': datetime.now().isoformat(),
             'approved_by': request.approved_by,
             'status': 'CLOSED',
-            'trial_balance': trial_balance_result.get('trial_balance', {}),
+            'approvals_summary': {
+                'total_generated': summary['total_generated'],
+                'approved': approved_count,
+                'rejected': rejected_count,
+                'assigned': assigned_count,
+                'by_type': by_type
+            },
             'statements_generated': [
                 'Income Statement',
                 'Balance Sheet',
                 'Cash Flow Statement',
                 'Statement of Changes in Equity'
-            ]
+            ],
+            'note': 'POC Mode: Period closed based on approval registry only. Data was not modified.'
         }
         
         # Send email reports if requested
@@ -3767,31 +4049,44 @@ def close_period(
                 include_csv=True,
                 subject=f"Month-End Close Report - {request.fiscal_period}",
                 message=f"""
-                <h2>Month-End Close Completed</h2>
+                <h2>Month-End Close Completed (POC Mode)</h2>
                 <p>The month-end close for period <strong>{request.fiscal_period}</strong> has been completed successfully.</p>
                 <p><strong>Closed by:</strong> {request.approved_by}</p>
                 <p><strong>Close Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                <p><strong>Note:</strong> This is a POC demo. Period closed based on approval registry only.</p>
+                
+                <h3>📋 Approval Summary</h3>
+                <ul>
+                    <li><strong>Total Approvals Generated:</strong> {summary['total_generated']}</li>
+                    <li><strong>Approved:</strong> {approved_count}</li>
+                    <li><strong>Rejected:</strong> {rejected_count}</li>
+                    <li><strong>Assigned:</strong> {assigned_count}</li>
+                </ul>
+                
+                <h4>Breakdown by Type:</h4>
+                <ul>
+                    {approval_summary_html}
+                </ul>
+                
                 <p>Please find attached the final financial reports.</p>
                 """
             )
             
-            # Add email task to background
-            background_tasks.add_task(
-                send_financial_reports,
-                email_request,
-                background_tasks
-            )
-            
+            background_tasks.add_task(send_financial_reports, email_request, background_tasks)
             close_summary['email_reports_sent'] = True
-            logger.info(f"📧 Email reports queued for period {request.fiscal_period}")
+        
+        # Log the successful close
+        logger.info(f"✅ Period {request.fiscal_period} closed successfully by {request.approved_by} (POC Mode)")
+        logger.info(f"   Approvals processed: {approved_count} approved, {rejected_count} rejected, {assigned_count} assigned out of {summary['total_generated']} total")
         
         return ToolResponse(
             success=True,
-            message=f"Period {request.fiscal_period} closed successfully. {'Email reports have been sent.' if request.send_email_reports else ''}",
+            message=f"✅ Period {request.fiscal_period} closed successfully! Processed {approved_count} approvals out of {summary['total_generated']} total. (POC Mode)",
             data=close_summary
         )
         
     except Exception as e:
+        logger.error(f"Error in close_period: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
@@ -3843,7 +4138,8 @@ def get_missing_cost_centers(fiscal_period: str):
                             "transaction_id": txn['Txn_ID'],
                             "posting_date": txn['Posting_Date_Raw'],
                             "vendor": txn['Vendor_Name_Raw']
-                        }
+                        },
+                        fiscal_period=fiscal_period
                     )
                     txn_data['approval_token'] = approval_item.token
                     txn_data['approval_links'] = get_approval_links(approval_item.token)
@@ -4000,7 +4296,8 @@ def get_overdue_invoices():
                                 "customer": record['Customer_Name'],
                                 "days_outstanding": days_outstanding,
                                 "due_date": record['Due_Date']
-                            }
+                            },
+                            fiscal_period="2026-02"
                         )
                         invoice_data['approval_token'] = approval_item.token
                         invoice_data['approval_links'] = get_approval_links(approval_item.token)
@@ -4194,6 +4491,9 @@ async def cfo_financial_dashboard(
         gross_profit = type_totals['Revenue'] - sum(e['balance'] for e in expense_accounts if 'cost' in e['name'].lower())
         gross_margin = (gross_profit / type_totals['Revenue'] * 100) if type_totals['Revenue'] != 0 else 0
         net_margin = (net_income / type_totals['Revenue'] * 100) if type_totals['Revenue'] != 0 else 0
+        
+        # Get approval summary for display
+        approval_summary = approval_registry.get_approval_summary(fiscal_period)
         
         # ====================================================================
         # HTML DASHBOARD WITH SUMMARY SECTION AND FORECAST
@@ -4654,6 +4954,17 @@ async def cfo_financial_dashboard(
                     </div>
                 </div>
                 
+                <!-- Approval Summary -->
+                <div class="key-points" style="margin-top: 20px; background: #000000; color: white;">
+                    <h4 style="color: white;">✅ Approval Status</h4>
+                    <ul style="color: white;">
+                        <li>Total Generated: {approval_summary['total_generated']}</li>
+                        <li>Approved: {approval_summary['approved']}</li>
+                        <li>Rejected: {approval_summary['rejected']}</li>
+                        <li>Pending: {approval_summary['pending']}</li>
+                    </ul>
+                </div>
+                
                 <!-- Key Highlights -->
                 <div class="key-points">
                     <h4>🔍 Key Highlights</h4>
@@ -4786,186 +5097,6 @@ async def cfo_financial_dashboard(
                     </div>
                 </div>
             </div>
-            
-            <!-- ==================== FORECAST SECTION ==================== -->
-            <div class="summary-card" style="margin-top: 30px;">
-                <div class="summary-header">
-                    <h2>🔮 Financial Forecast - Next 3 Months</h2>
-                    <span class="summary-date">Based on historical trends & budget</span>
-                </div>
-                
-                <div class="forecast-summary">
-                    <div style="display: flex; gap: 20px; margin-bottom: 30px; flex-wrap: wrap;">
-                        <!-- Revenue Forecast -->
-                        <div style="flex: 1; min-width: 250px; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
-                            <h3 style="color: #000000; margin-bottom: 15px;">📈 Revenue Forecast</h3>
-                            <table style="width: 100%;">
-                                <tr>
-                                    <td><strong>Current Month:</strong></td>
-                                    <td style="text-align: right; font-weight: bold;">${type_totals['Revenue']:,.0f}</td>
-                                </tr>
-                                <tr>
-                                    <td><strong>Next Month:</strong></td>
-                                    <td style="text-align: right; color: #333333;">${type_totals['Revenue'] * 1.02:,.0f}</td>
-                                </tr>
-                                <tr>
-                                    <td><strong>Month +2:</strong></td>
-                                    <td style="text-align: right; color: #333333;">${type_totals['Revenue'] * 1.035:,.0f}</td>
-                                </tr>
-                                <tr>
-                                    <td><strong>Month +3:</strong></td>
-                                    <td style="text-align: right; color: #333333;">${type_totals['Revenue'] * 1.05:,.0f}</td>
-                                </tr>
-                                <tr style="border-top: 1px solid #e0e0e0;">
-                                    <td style="padding-top: 10px;"><strong>Growth (QoQ):</strong></td>
-                                    <td style="text-align: right; padding-top: 10px; color: #000000; font-weight: bold;">+5.0%</td>
-                                </tr>
-                            </table>
-                        </div>
-                        
-                        <!-- Expense Forecast -->
-                        <div style="flex: 1; min-width: 250px; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
-                            <h3 style="color: #000000; margin-bottom: 15px;">📉 Expense Forecast</h3>
-                            <table style="width: 100%;">
-                                <tr>
-                                    <td><strong>Current Month:</strong></td>
-                                    <td style="text-align: right; font-weight: bold;">${type_totals['Expense']:,.0f}</td>
-                                </tr>
-                                <tr>
-                                    <td><strong>Next Month:</strong></td>
-                                    <td style="text-align: right; color: #666666;">${type_totals['Expense'] * 1.01:,.0f}</td>
-                                </tr>
-                                <tr>
-                                    <td><strong>Month +2:</strong></td>
-                                    <td style="text-align: right; color: #666666;">${type_totals['Expense'] * 1.02:,.0f}</td>
-                                </tr>
-                                <tr>
-                                    <td><strong>Month +3:</strong></td>
-                                    <td style="text-align: right; color: #666666;">${type_totals['Expense'] * 1.025:,.0f}</td>
-                                </tr>
-                                <tr style="border-top: 1px solid #e0e0e0;">
-                                    <td style="padding-top: 10px;"><strong>Growth (QoQ):</strong></td>
-                                    <td style="text-align: right; padding-top: 10px; color: #666666; font-weight: bold;">+2.5%</td>
-                                </tr>
-                            </table>
-                        </div>
-                        
-                        <!-- Net Income Forecast -->
-                        <div style="flex: 1; min-width: 250px; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
-                            <h3 style="color: #000000; margin-bottom: 15px;">💰 Net Income Forecast</h3>
-                            <table style="width: 100%;">
-                                <tr>
-                                    <td><strong>Current Month:</strong></td>
-                                    <td style="text-align: right; font-weight: bold;">${net_income:,.0f}</td>
-                                </tr>
-                                <tr>
-                                    <td><strong>Next Month:</strong></td>
-                                    <td style="text-align: right; color: {'#000000' if net_income > 0 else '#666666'};">${net_income * 1.03:,.0f}</td>
-                                </tr>
-                                <tr>
-                                    <td><strong>Month +2:</strong></td>
-                                    <td style="text-align: right; color: {'#000000' if net_income > 0 else '#666666'};">${net_income * 1.06:,.0f}</td>
-                                </tr>
-                                <tr>
-                                    <td><strong>Month +3:</strong></td>
-                                    <td style="text-align: right; color: {'#000000' if net_income > 0 else '#666666'};">${net_income * 1.09:,.0f}</td>
-                                </tr>
-                                <tr style="border-top: 1px solid #e0e0e0;">
-                                    <td style="padding-top: 10px;"><strong>Growth (QoQ):</strong></td>
-                                    <td style="text-align: right; padding-top: 10px; color: #000000; font-weight: bold;">+9.0%</td>
-                                </tr>
-                            </table>
-                        </div>
-                    </div>
-                    
-                    <!-- Cash Flow Forecast -->
-                    <div style="margin-bottom: 25px;">
-                        <h3 style="color: #000000; margin-bottom: 15px;">💵 Cash Flow Forecast</h3>
-                        <div style="display: flex; gap: 20px; flex-wrap: wrap;">
-                            <div style="flex: 1; min-width: 200px;">
-                                <div style="background: #f0f0f0; padding: 15px; border-radius: 10px; text-align: center;">
-                                    <div style="font-size: 0.9em; color: #666;">Opening Balance</div>
-                                    <div style="font-size: 1.5em; font-weight: bold; color: #000000;">${type_totals['Asset'] * 0.3:,.0f}</div>
-                                </div>
-                            </div>
-                            <div style="flex: 1; min-width: 200px;">
-                                <div style="background: #f0f0f0; padding: 15px; border-radius: 10px; text-align: center;">
-                                    <div style="font-size: 0.9em; color: #666;">Expected Inflows</div>
-                                    <div style="font-size: 1.5em; font-weight: bold; color: #000000;">+${type_totals['Revenue'] * 0.95:,.0f}</div>
-                                </div>
-                            </div>
-                            <div style="flex: 1; min-width: 200px;">
-                                <div style="background: #f0f0f0; padding: 15px; border-radius: 10px; text-align: center;">
-                                    <div style="font-size: 0.9em; color: #666;">Expected Outflows</div>
-                                    <div style="font-size: 1.5em; font-weight: bold; color: #666666;">-${type_totals['Expense'] * 0.9:,.0f}</div>
-                                </div>
-                            </div>
-                            <div style="flex: 1; min-width: 200px;">
-                                <div style="background: #000000; padding: 15px; border-radius: 10px; text-align: center;">
-                                    <div style="font-size: 0.9em; color: #cccccc;">Projected Closing</div>
-                                    <div style="font-size: 1.5em; font-weight: bold; color: white;">${(type_totals['Asset'] * 0.3) + (type_totals['Revenue'] * 0.95) - (type_totals['Expense'] * 0.9):,.0f}</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Forecast Charts -->
-                    <div class="chart-grid" style="grid-template-columns: repeat(2, 1fr);">
-                        <!-- 3-Month Forecast Trend -->
-                        <div class="chart-card">
-                            <div class="chart-title">📊 3-Month Forecast Trend</div>
-                            <div class="chart-container" style="height: 250px;">
-                                <canvas id="forecastTrendChart"></canvas>
-                            </div>
-                        </div>
-                        
-                        <!-- Key Forecast Metrics -->
-                        <div class="chart-card">
-                            <div class="chart-title">🎯 Key Forecast Metrics</div>
-                            <div class="forecast-metrics">
-                                <table style="width: 100%; margin-top: 10px;">
-                                    <tr>
-                                        <td style="padding: 10px;"><strong>Projected Revenue (Qtr):</strong></td>
-                                        <td style="text-align: right; font-weight: bold;">${type_totals['Revenue'] * 3.05:,.0f}</td>
-                                    </tr>
-                                    <tr>
-                                        <td style="padding: 10px;"><strong>Projected Expenses (Qtr):</strong></td>
-                                        <td style="text-align: right;">${type_totals['Expense'] * 3.025:,.0f}</td>
-                                    </tr>
-                                    <tr style="background: #f0f0f0;">
-                                        <td style="padding: 10px;"><strong>Projected Net Income (Qtr):</strong></td>
-                                        <td style="text-align: right; font-weight: bold; color: #000000;">${(type_totals['Revenue'] * 3.05) - (type_totals['Expense'] * 3.025):,.0f}</td>
-                                    </tr>
-                                    <tr>
-                                        <td style="padding: 10px;"><strong>Avg Monthly Growth:</strong></td>
-                                        <td style="text-align: right; color: #333333;">1.7%</td>
-                                    </tr>
-                                    <tr>
-                                        <td style="padding: 10px;"><strong>Cash Runway (months):</strong></td>
-                                        <td style="text-align: right; color: #333333;">{(type_totals['Asset'] * 0.3) / (type_totals['Expense'] * 0.1) if type_totals['Expense'] > 0 else 0:.1f}</td>
-                                    </tr>
-                                    <tr>
-                                        <td style="padding: 10px;"><strong>Forecast Confidence:</strong></td>
-                                        <td style="text-align: right;">
-                                            <span style="background: #000000; color: white; padding: 5px 10px; border-radius: 15px; font-size: 0.85em;">HIGH (85%)</span>
-                                        </td>
-                                    </tr>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Forecast Notes -->
-                    <div style="margin-top: 20px; background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 4px solid #000000;">
-                        <p style="margin: 0; color: #333;">
-                            <strong>🔍 Forecast Assumptions:</strong> Based on historical trends, budget targets, and seasonal adjustments. 
-                            Revenue projected at 2% monthly growth, expenses at 1% monthly growth. 
-                            Cash flow assumes 95% collection rate and 90% payment rate.
-                        </p>
-                    </div>
-                </div>
-            </div>
-            <!-- ==================== END FORECAST SECTION ==================== -->
             
             <!-- Financial Statements -->
             <div class="financial-grid">
@@ -5111,6 +5242,7 @@ async def cfo_financial_dashboard(
                 <a href="/dashboard">← Approval Dashboard</a>
                 <a href="/cfo/financial_report">📊 JSON Report</a>
                 <a href="/docs">📚 API Docs</a>
+                <a href="/approvals/check_status/{fiscal_period}">✅ Check Approval Status</a>
                 <p style="margin-top: 20px;">© 2026 Finance Month-End Close AI Agent v3.0.0</p>
             </div>
             
@@ -5215,105 +5347,6 @@ async def cfo_financial_dashboard(
                                 ticks: {{
                                     callback: function(value) {{
                                         return '$' + value;
-                                    }}
-                                }}
-                            }}
-                        }}
-                    }}
-                }});
-                
-                // Forecast Trend Chart
-                const forecastCtx = document.getElementById('forecastTrendChart').getContext('2d');
-                new Chart(forecastCtx, {{
-                    type: 'line',
-                    data: {{
-                        labels: ['Current', 'Month +1', 'Month +2', 'Month +3'],
-                        datasets: [
-                            {{
-                                label: 'Revenue',
-                                data: [
-                                    {type_totals['Revenue']},
-                                    {type_totals['Revenue'] * 1.02},
-                                    {type_totals['Revenue'] * 1.035},
-                                    {type_totals['Revenue'] * 1.05}
-                                ],
-                                borderColor: '#333333',
-                                backgroundColor: 'rgba(51, 51, 51, 0.1)',
-                                tension: 0.4,
-                                fill: false,
-                                pointBackgroundColor: '#333333',
-                                pointBorderColor: 'white',
-                                pointBorderWidth: 2,
-                                pointRadius: 5
-                            }},
-                            {{
-                                label: 'Expenses',
-                                data: [
-                                    {type_totals['Expense']},
-                                    {type_totals['Expense'] * 1.01},
-                                    {type_totals['Expense'] * 1.02},
-                                    {type_totals['Expense'] * 1.025}
-                                ],
-                                borderColor: '#666666',
-                                backgroundColor: 'rgba(102, 102, 102, 0.1)',
-                                tension: 0.4,
-                                fill: false,
-                                pointBackgroundColor: '#666666',
-                                pointBorderColor: 'white',
-                                pointBorderWidth: 2,
-                                pointRadius: 5
-                            }},
-                            {{
-                                label: 'Net Income',
-                                data: [
-                                    {net_income},
-                                    {net_income * 1.03},
-                                    {net_income * 1.06},
-                                    {net_income * 1.09}
-                                ],
-                                borderColor: '#999999',
-                                backgroundColor: 'rgba(153, 153, 153, 0.1)',
-                                tension: 0.4,
-                                fill: false,
-                                pointBackgroundColor: '#999999',
-                                pointBorderColor: 'white',
-                                pointBorderWidth: 2,
-                                pointRadius: 5
-                            }}
-                        ]
-                    }},
-                    options: {{
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: {{
-                            legend: {{
-                                position: 'bottom',
-                                labels: {{
-                                    usePointStyle: true,
-                                    padding: 20
-                                }}
-                            }},
-                            tooltip: {{
-                                callbacks: {{
-                                    label: function(context) {{
-                                        let label = context.dataset.label || '';
-                                        if (label) {{
-                                            label += ': ';
-                                        }}
-                                        if (context.parsed.y !== null) {{
-                                            label += '$' + context.parsed.y.toFixed(0).replace(/\\B(?=(\\d{{3}})+(?!\\d))/g, ",");
-                                        }}
-                                        return label;
-                                    }}
-                                }}
-                            }}
-                        }},
-                        scales: {{
-                            y: {{
-                                beginAtZero: false,
-                                ticks: {{
-                                    callback: function(value) {{
-                                        return '$' + value.toFixed(0).replace(/\\B(?=(\\d{{3}})+(?!\\d))/g, ",");
                                     }}
                                 }}
                             }}
@@ -5426,6 +5459,9 @@ async def get_cfo_financial_report(
             if int(r['Days_Outstanding']) > 90
         )
         
+        # Add approval summary
+        approval_summary = approval_registry.get_approval_summary(fiscal_period)
+        
         return {
             'generated_at': datetime.now().isoformat(),
             'fiscal_period': fiscal_period,
@@ -5456,7 +5492,8 @@ async def get_cfo_financial_report(
                 'gross_margin': ((type_totals.get('Revenue', 0) - type_totals.get('Expense', 0)) / type_totals.get('Revenue', 1)) * 100 if type_totals.get('Revenue', 0) > 0 else 0,
                 'net_margin': ((type_totals.get('Revenue', 0) - type_totals.get('Expense', 0)) / type_totals.get('Revenue', 1)) * 100 if type_totals.get('Revenue', 0) > 0 else 0,
                 'overdue_ratio': (ar_metrics['overdue'] / ar_metrics['total_outstanding'] * 100) if ar_metrics['total_outstanding'] > 0 else 0
-            }
+            },
+            'approval_summary': approval_summary
         }
         
     except Exception as e:
@@ -5546,6 +5583,9 @@ async def send_financial_reports(
             else:
                 aging_buckets['90+ Days'] += amount
         
+        # Get approval summary
+        approval_summary = approval_registry.get_approval_summary(request.fiscal_period)
+        
         # Create summary HTML
         summary_html = f"""
         <div style="background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%); padding: 25px; border-radius: 15px; margin-bottom: 30px; border: 1px solid #e0e0e0;">
@@ -5556,86 +5596,42 @@ async def send_financial_reports(
                 </span>
             </div>
             
-            <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
-                <tr>
-                    <td style="width: 33%; padding: 10px; vertical-align: top;">
-                        <div style="background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
-                            <h3 style="color: #000000; margin: 0 0 15px 0; padding-bottom: 10px; border-bottom: 2px solid #e0e0e0;">📈 Performance</h3>
-                            <table style="width: 100%;">
-                                <tr><td style="padding: 5px 0;"><strong>Revenue:</strong></td><td style="text-align: right; font-weight: bold;">${revenue:,.0f}</td></tr>
-                                <tr><td style="padding: 5px 0;"><strong>Expenses:</strong></td><td style="text-align: right;">${expenses:,.0f}</td></tr>
-                                <tr style="border-top: 1px solid #e0e0e0;"><td style="padding: 8px 0;"><strong>Net Income:</strong></td>
-                                    <td style="text-align: right; font-weight: bold; color: {'#000000' if net_income >= 0 else '#666666'};">
-                                        ${net_income:,.0f}
-                                    </td>
-                                </tr>
-                                <tr><td style="padding: 5px 0;"><strong>Margin:</strong></td><td style="text-align: right;">{(net_income/revenue*100) if revenue > 0 else 0:.1f}%</td></tr>
-                            </table>
-                        </div>
-                    </td>
-                    <td style="width: 33%; padding: 10px; vertical-align: top;">
-                        <div style="background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
-                            <h3 style="color: #000000; margin: 0 0 15px 0; padding-bottom: 10px; border-bottom: 2px solid #e0e0e0;">💰 Accounts Receivable</h3>
-                            <table style="width: 100%;">
-                                <tr><td style="padding: 5px 0;"><strong>Total Outstanding:</strong></td><td style="text-align: right; font-weight: bold;">${total_ar:,.0f}</td></tr>
-                                <tr><td style="padding: 5px 0;"><strong>Overdue:</strong></td><td style="text-align: right; color: {'#000000' if overdue_ar == 0 else '#666666'};">${overdue_ar:,.0f}</td></tr>
-                                <tr><td style="padding: 5px 0;"><strong>Overdue %:</strong></td><td style="text-align: right;">{(overdue_ar/total_ar*100) if total_ar > 0 else 0:.1f}%</td></tr>
-                                <tr><td style="padding: 5px 0;"><strong>90+ Days:</strong></td><td style="text-align: right;">${aging_buckets['90+ Days']:,.0f}</td></tr>
-                            </table>
-                        </div>
-                    </td>
-                    <td style="width: 33%; padding: 10px; vertical-align: top;">
-                        <div style="background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
-                            <h3 style="color: #000000; margin: 0 0 15px 0; padding-bottom: 10px; border-bottom: 2px solid #e0e0e0;">📊 Budget Performance</h3>
-                            <table style="width: 100%;">
-                                <tr><td style="padding: 5px 0;"><strong>Budget:</strong></td><td style="text-align: right;">${total_budget:,.0f}</td></tr>
-                                <tr><td style="padding: 5px 0;"><strong>Actual:</strong></td><td style="text-align: right;">${total_actual:,.0f}</td></tr>
-                                <tr style="border-top: 1px solid #e0e0e0;"><td style="padding: 8px 0;"><strong>Variance:</strong></td>
-                                    <td style="text-align: right; font-weight: bold; color: {'#000000' if total_variance < 0 else '#666666'};">
-                                        ${total_variance:,.0f} ({variance_pct:.1f}%)
-                                    </td>
-                                </tr>
-                            </table>
-                        </div>
-                    </td>
-                </tr>
-            </table>
-            
-            <div style="margin-top: 15px; background: #f0f0f0; padding: 15px 20px; border-radius: 10px;">
-                <h4 style="margin: 0 0 10px 0; color: #000000;">🔍 Key Highlights</h4>
-                <ul style="list-style-type: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 15px;">
-        """
-        
-        # Add dynamic highlights
-        highlights = []
-        
-        if net_income > 0:
-            highlights.append(f"✅ Profitable period with net income of ${net_income:,.0f}")
-        else:
-            highlights.append(f"⚠️ Net loss of ${abs(net_income):,.0f} this period")
-        
-        if overdue_ar == 0:
-            highlights.append("✅ No overdue receivables")
-        elif overdue_ar < total_ar * 0.1:
-            highlights.append(f"⚠️ Overdue receivables at {(overdue_ar/total_ar*100):.1f}% of total AR")
-        else:
-            highlights.append(f"⚠️ High overdue receivables at {(overdue_ar/total_ar*100):.1f}% of total AR")
-        
-        if aging_buckets['90+ Days'] > 0:
-            highlights.append(f"⚠️ ${aging_buckets['90+ Days']:,.0f} in 90+ days aging bucket")
-        
-        if abs(variance_pct) > 10:
-            highlights.append(f"⚠️ Budget variance exceeds 10% ({variance_pct:.1f}%)")
-        
-        for highlight in highlights[:4]:
-            summary_html += f"""
-                    <li style="background: white; padding: 8px 16px; border-radius: 20px; font-size: 0.95em; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
-                        {highlight}
-                    </li>
-            """
-        
-        summary_html += """
-                </ul>
+            <div style="display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap;">
+                <div style="flex: 1; min-width: 200px; background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+                    <h3 style="color: #000000; margin: 0 0 10px 0;">📈 Performance</h3>
+                    <table style="width: 100%;">
+                        <tr><td><strong>Revenue:</strong></td><td style="text-align: right;">${revenue:,.0f}</td></tr>
+                        <tr><td><strong>Expenses:</strong></td><td style="text-align: right;">${expenses:,.0f}</td></tr>
+                        <tr><td><strong>Net Income:</strong></td><td style="text-align: right; font-weight: bold;">${net_income:,.0f}</td></tr>
+                    </table>
+                </div>
+                
+                <div style="flex: 1; min-width: 200px; background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+                    <h3 style="color: #000000; margin: 0 0 10px 0;">💰 AR Summary</h3>
+                    <table style="width: 100%;">
+                        <tr><td><strong>Total AR:</strong></td><td style="text-align: right;">${total_ar:,.0f}</td></tr>
+                        <tr><td><strong>Overdue:</strong></td><td style="text-align: right;">${overdue_ar:,.0f}</td></tr>
+                        <tr><td><strong>90+ Days:</strong></td><td style="text-align: right;">${aging_buckets['90+ Days']:,.0f}</td></tr>
+                    </table>
+                </div>
+                
+                <div style="flex: 1; min-width: 200px; background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+                    <h3 style="color: #000000; margin: 0 0 10px 0;">📊 Budget</h3>
+                    <table style="width: 100%;">
+                        <tr><td><strong>Budget:</strong></td><td style="text-align: right;">${total_budget:,.0f}</td></tr>
+                        <tr><td><strong>Actual:</strong></td><td style="text-align: right;">${total_actual:,.0f}</td></tr>
+                        <tr><td><strong>Variance:</strong></td><td style="text-align: right;">${total_variance:,.0f}</td></tr>
+                    </table>
+                </div>
+                
+                <div style="flex: 1; min-width: 200px; background: #000000; color: white; padding: 15px; border-radius: 10px;">
+                    <h3 style="color: white; margin: 0 0 10px 0;">✅ Approvals</h3>
+                    <table style="width: 100%; color: white;">
+                        <tr><td><strong>Total:</strong></td><td style="text-align: right;">{approval_summary['total_generated']}</td></tr>
+                        <tr><td><strong>Approved:</strong></td><td style="text-align: right;">{approval_summary['approved']}</td></tr>
+                        <tr><td><strong>Pending:</strong></td><td style="text-align: right;">{approval_summary['pending']}</td></tr>
+                    </table>
+                </div>
             </div>
         </div>
         """
@@ -5865,6 +5861,9 @@ async def preview_email_report(
             else:
                 aging_buckets['90+ Days'] += amount
         
+        # Get approval summary
+        approval_summary = approval_registry.get_approval_summary(fiscal_period)
+        
         # Create summary HTML for preview
         summary_html = f"""
         <div style="background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%); padding: 25px; border-radius: 15px; margin-bottom: 30px; border: 1px solid #e0e0e0;">
@@ -5875,86 +5874,42 @@ async def preview_email_report(
                 </span>
             </div>
             
-            <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
-                <tr>
-                    <td style="width: 33%; padding: 10px; vertical-align: top;">
-                        <div style="background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
-                            <h3 style="color: #000000; margin: 0 0 15px 0; padding-bottom: 10px; border-bottom: 2px solid #e0e0e0;">📈 Performance</h3>
-                            <table style="width: 100%;">
-                                <tr><td style="padding: 5px 0;"><strong>Revenue:</strong></td><td style="text-align: right; font-weight: bold;">${revenue:,.0f}</td></tr>
-                                <tr><td style="padding: 5px 0;"><strong>Expenses:</strong></td><td style="text-align: right;">${expenses:,.0f}</td></tr>
-                                <tr style="border-top: 1px solid #e0e0e0;"><td style="padding: 8px 0;"><strong>Net Income:</strong></td>
-                                    <td style="text-align: right; font-weight: bold; color: {'#000000' if net_income >= 0 else '#666666'};">
-                                        ${net_income:,.0f}
-                                    </td>
-                                </tr>
-                                <tr><td style="padding: 5px 0;"><strong>Margin:</strong></td><td style="text-align: right;">{(net_income/revenue*100) if revenue > 0 else 0:.1f}%</td></tr>
-                            </table>
-                        </div>
-                    </td>
-                    <td style="width: 33%; padding: 10px; vertical-align: top;">
-                        <div style="background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
-                            <h3 style="color: #000000; margin: 0 0 15px 0; padding-bottom: 10px; border-bottom: 2px solid #e0e0e0;">💰 Accounts Receivable</h3>
-                            <table style="width: 100%;">
-                                <tr><td style="padding: 5px 0;"><strong>Total Outstanding:</strong></td><td style="text-align: right; font-weight: bold;">${total_ar:,.0f}</td></tr>
-                                <tr><td style="padding: 5px 0;"><strong>Overdue:</strong></td><td style="text-align: right; color: {'#000000' if overdue_ar == 0 else '#666666'};">${overdue_ar:,.0f}</td></tr>
-                                <tr><td style="padding: 5px 0;"><strong>Overdue %:</strong></td><td style="text-align: right;">{(overdue_ar/total_ar*100) if total_ar > 0 else 0:.1f}%</td></tr>
-                                <tr><td style="padding: 5px 0;"><strong>90+ Days:</strong></td><td style="text-align: right;">${aging_buckets['90+ Days']:,.0f}</td></tr>
-                            </table>
-                        </div>
-                    </td>
-                    <td style="width: 33%; padding: 10px; vertical-align: top;">
-                        <div style="background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
-                            <h3 style="color: #000000; margin: 0 0 15px 0; padding-bottom: 10px; border-bottom: 2px solid #e0e0e0;">📊 Budget Performance</h3>
-                            <table style="width: 100%;">
-                                <tr><td style="padding: 5px 0;"><strong>Budget:</strong></td><td style="text-align: right;">${total_budget:,.0f}</td></tr>
-                                <tr><td style="padding: 5px 0;"><strong>Actual:</strong></td><td style="text-align: right;">${total_actual:,.0f}</td></tr>
-                                <tr style="border-top: 1px solid #e0e0e0;"><td style="padding: 8px 0;"><strong>Variance:</strong></td>
-                                    <td style="text-align: right; font-weight: bold; color: {'#000000' if total_variance < 0 else '#666666'};">
-                                        ${total_variance:,.0f} ({variance_pct:.1f}%)
-                                    </td>
-                                </tr>
-                            </table>
-                        </div>
-                    </td>
-                </tr>
-            </table>
-            
-            <div style="margin-top: 15px; background: #f0f0f0; padding: 15px 20px; border-radius: 10px;">
-                <h4 style="margin: 0 0 10px 0; color: #000000;">🔍 Key Highlights</h4>
-                <ul style="list-style-type: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 15px;">
-        """
-        
-        # Add dynamic highlights
-        highlights = []
-        
-        if net_income > 0:
-            highlights.append(f"✅ Profitable period with net income of ${net_income:,.0f}")
-        else:
-            highlights.append(f"⚠️ Net loss of ${abs(net_income):,.0f} this period")
-        
-        if overdue_ar == 0:
-            highlights.append("✅ No overdue receivables")
-        elif overdue_ar < total_ar * 0.1:
-            highlights.append(f"⚠️ Overdue receivables at {(overdue_ar/total_ar*100):.1f}% of total AR")
-        else:
-            highlights.append(f"⚠️ High overdue receivables at {(overdue_ar/total_ar*100):.1f}% of total AR")
-        
-        if aging_buckets['90+ Days'] > 0:
-            highlights.append(f"⚠️ ${aging_buckets['90+ Days']:,.0f} in 90+ days aging bucket")
-        
-        if abs(variance_pct) > 10:
-            highlights.append(f"⚠️ Budget variance exceeds 10% ({variance_pct:.1f}%)")
-        
-        for highlight in highlights[:4]:
-            summary_html += f"""
-                    <li style="background: white; padding: 8px 16px; border-radius: 20px; font-size: 0.95em; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
-                        {highlight}
-                    </li>
-            """
-        
-        summary_html += """
-                </ul>
+            <div style="display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap;">
+                <div style="flex: 1; min-width: 200px; background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+                    <h3 style="color: #000000; margin: 0 0 10px 0;">📈 Performance</h3>
+                    <table style="width: 100%;">
+                        <tr><td><strong>Revenue:</strong></td><td style="text-align: right;">${revenue:,.0f}</td></tr>
+                        <tr><td><strong>Expenses:</strong></td><td style="text-align: right;">${expenses:,.0f}</td></tr>
+                        <tr><td><strong>Net Income:</strong></td><td style="text-align: right; font-weight: bold;">${net_income:,.0f}</td></tr>
+                    </table>
+                </div>
+                
+                <div style="flex: 1; min-width: 200px; background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+                    <h3 style="color: #000000; margin: 0 0 10px 0;">💰 AR Summary</h3>
+                    <table style="width: 100%;">
+                        <tr><td><strong>Total AR:</strong></td><td style="text-align: right;">${total_ar:,.0f}</td></tr>
+                        <tr><td><strong>Overdue:</strong></td><td style="text-align: right;">${overdue_ar:,.0f}</td></tr>
+                        <tr><td><strong>90+ Days:</strong></td><td style="text-align: right;">${aging_buckets['90+ Days']:,.0f}</td></tr>
+                    </table>
+                </div>
+                
+                <div style="flex: 1; min-width: 200px; background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+                    <h3 style="color: #000000; margin: 0 0 10px 0;">📊 Budget</h3>
+                    <table style="width: 100%;">
+                        <tr><td><strong>Budget:</strong></td><td style="text-align: right;">${total_budget:,.0f}</td></tr>
+                        <tr><td><strong>Actual:</strong></td><td style="text-align: right;">${total_actual:,.0f}</td></tr>
+                        <tr><td><strong>Variance:</strong></td><td style="text-align: right;">${total_variance:,.0f}</td></tr>
+                    </table>
+                </div>
+                
+                <div style="flex: 1; min-width: 200px; background: #000000; color: white; padding: 15px; border-radius: 10px;">
+                    <h3 style="color: white; margin: 0 0 10px 0;">✅ Approvals</h3>
+                    <table style="width: 100%; color: white;">
+                        <tr><td><strong>Total:</strong></td><td style="text-align: right;">{approval_summary['total_generated']}</td></tr>
+                        <tr><td><strong>Approved:</strong></td><td style="text-align: right;">{approval_summary['approved']}</td></tr>
+                        <tr><td><strong>Pending:</strong></td><td style="text-align: right;">{approval_summary['pending']}</td></tr>
+                    </table>
+                </div>
             </div>
         </div>
         """
@@ -6049,15 +6004,18 @@ async def check_email_config():
     api_key = os.getenv("SENDGRID_API_KEY")
     from_email = os.getenv("FROM_EMAIL", "deepanshu.dubey@octanesolutions.com.au")
     
+    approval_summary = approval_registry.get_approval_summary()
+    
     return {
         "sendgrid_configured": bool(api_key),
         "from_email": from_email,
         "status": "✅ Ready to send" if bool(api_key) else "⚠️ Not configured - emails will be simulated",
         "pending_approvals": len(pending_approvals),
+        "registered_approvals": len(approval_registry.generated_approvals),
+        "approval_summary": approval_summary,
         "assigned_items": len([i for i in pending_approvals.values() if i.assigned_to is not None]),
         "total_reports_sent": len([h for h in approval_history if h.get('email_sent', False)])
     }
-
 
 # ============================================================================
 # ACTIVITY 1: INTERCOMPANY RECONCILIATION
@@ -6183,7 +6141,8 @@ async def intercompany_reconcile(request: IntercompanyReconciliationRequest):
                         'root_cause': rec.get('Root_Cause', 'Unknown'),
                         'recommendation': rec.get('Agent_Recommendation', ''),
                         'affected_txns': rec.get('Affected_GL_Txns', '')
-                    }
+                    },
+                    fiscal_period=request.fiscal_period
                 )
                 
                 exceptions.append({
@@ -6316,36 +6275,29 @@ async def post_intercompany_eliminations(request: IntercompanyEliminationRequest
                 message="No journals selected for posting"
             )
         
-        # Check if all selected journals are approved
+        # Check if all selected journals are approved using registry
         unapproved = []
         for journal in journals_to_post:
             journal_id = journal.get('JE_Number')
-            # Check for pending approval in dashboard
+            # Check registry for approval
             found_approved = False
-            for token, item in pending_approvals.items():
-                if (item.type == "Intercompany Variance" and 
-                    item.metadata and 
-                    journal_id in str(item.metadata.get('affected_txns', ''))):
-                    if item.status != ApprovalStatus.APPROVED:
-                        unapproved.append({
-                            'journal_id': journal_id,
-                            'status': item.status.value,
-                            'approval_token': token
-                        })
-                    else:
-                        found_approved = True
+            for token, info in approval_registry.generated_approvals.items():
+                if (info.get('type') == "Intercompany Variance" and
+                    f"var:{journal_id}" in info.get('metadata_summary', '') and
+                    info.get('status') == 'APPROVED'):
+                    found_approved = True
                     break
             
             # Also check history
             if not found_approved:
                 for hist in approval_history:
-                    if (hist.get('type') == "Intercompany Variance" and 
+                    if (hist.get('type') == "Intercompany Variance" and
                         hist.get('decision') == 'approved' and
                         journal_id in str(hist.get('metadata', {}).get('affected_txns', ''))):
                         found_approved = True
                         break
             
-            if not found_approved and journal_id not in [u['journal_id'] for u in unapproved]:
+            if not found_approved:
                 unapproved.append({
                     'journal_id': journal_id,
                     'status': 'not_found',
@@ -6532,7 +6484,8 @@ async def analyze_accruals_prepayments(request: AccrualsPrepaymentsRequest):
                         'variance': item['variance'],
                         'reason': item['reason'],
                         'recommendation': f"Post adjustment journal to correct ${abs(item['variance']):,.2f} variance"
-                    }
+                    },
+                    fiscal_period=request.fiscal_period
                 )
                 
                 exceptions.append({
@@ -6605,7 +6558,7 @@ async def analyze_accruals_prepayments(request: AccrualsPrepaymentsRequest):
         return ToolResponse(
             success=True,
             message=message,
-            data=response_data
+            data=responseData
         )
         
     except Exception as e:
@@ -6708,27 +6661,20 @@ async def post_accrual_adjustments(request: AccrualAdjustmentRequest):
                 message="No adjustment journals found for the specified accruals"
             )
         
-        # Check if all are approved
+        # Check if all are approved using registry
         unapproved = []
         for journal in journals_to_post:
             accrual_id = journal.get('Accrual_ID')
-            # Check for pending approval
+            # Check registry for approval
             found_approved = False
-            for token, item in pending_approvals.items():
-                if (item.type == "Accrual Variance" and 
-                    item.metadata and 
-                    item.metadata.get('accrual_id') == accrual_id):
-                    if item.status != ApprovalStatus.APPROVED:
-                        unapproved.append({
-                            'accrual_id': accrual_id,
-                            'status': item.status.value,
-                            'approval_token': token
-                        })
-                    else:
-                        found_approved = True
+            for token, info in approval_registry.generated_approvals.items():
+                if (info.get('type') == "Accrual Variance" and
+                    f"accrual:{accrual_id}" in info.get('metadata_summary', '') and
+                    info.get('status') == 'APPROVED'):
+                    found_approved = True
                     break
             
-            if not found_approved and accrual_id not in [u['accrual_id'] for u in unapproved]:
+            if not found_approved:
                 unapproved.append({
                     'accrual_id': accrual_id,
                     'status': 'not_found',
@@ -6851,7 +6797,8 @@ async def bank_reconciliation(request: BankReconciliationRequest):
                         'aging_days': item_info['aging'],
                         'materiality': item_info['materiality'],
                         'recommendation': item_info['recommendation']
-                    }
+                    },
+                    fiscal_period=request.fiscal_period
                 )
                 
                 exceptions.append({
@@ -7064,28 +7011,31 @@ async def post_bank_reconciliation_journals(
         # Load existing journals
         reconciliation_journals = load_csv_data('Bank_Reconciliation_Journals_Feb2026.csv')
         
-        # Check if entries are approved
+        # Check if entries are approved using registry
         unapproved_entries = []
         approved_entries = []
         
         for entry in request.entries:
             if not entry.approved:
-                # Check for pending approval in dashboard
-                found = False
-                for token, item in pending_approvals.items():
-                    if (item.type == "Bank Reconciliation" and 
-                        item.metadata and 
-                        entry.entry_id in str(item.metadata.get('item_id', ''))):
-                        found = True
-                        unapproved_entries.append({
-                            'entry_id': entry.entry_id,
-                            'status': 'pending_dashboard',
-                            'approval_token': token,
-                            'approval_links': get_approval_links(token)
-                        })
+                # Check registry for approval
+                found_approved = False
+                for token, info in approval_registry.generated_approvals.items():
+                    if (info.get('type') == "Bank Reconciliation" and
+                        f"item:{entry.entry_id}" in info.get('metadata_summary', '') and
+                        info.get('status') == 'APPROVED'):
+                        found_approved = True
                         break
                 
-                if not found:
+                # Also check history
+                if not found_approved:
+                    for hist_item in approval_history:
+                        if (hist_item.get('type') == "Bank Reconciliation" and
+                            hist_item.get('metadata', {}).get('item_id') == entry.entry_id and
+                            hist_item.get('decision') == 'approved'):
+                            found_approved = True
+                            break
+                
+                if not found_approved:
                     unapproved_entries.append({
                         'entry_id': entry.entry_id,
                         'status': 'not_approved'
@@ -7214,19 +7164,22 @@ async def get_close_status(fiscal_period: str = Query("2026-02")):
         ic_rec_period = [r for r in ic_reconciliation if r.get('Period') == fiscal_period]
         accruals_period = [a for a in accruals if a.get('Period') == fiscal_period]
         
+        # Get approval summary from registry
+        approval_summary = approval_registry.get_approval_summary(fiscal_period)
+        
         # Calculate status by activity
         status = {
             'intercompany': {
-                'status': 'PENDING_APPROVAL',
+                'status': 'PENDING_APPROVAL' if approval_summary['by_type'].get('Intercompany Variance', {}).get('pending', 0) > 0 else 'COMPLETE',
                 'total_variances': len([r for r in ic_rec_period if abs(float(r.get('Variance_AUD', 0))) > 0]),
                 'material_items': len([r for r in ic_rec_period if r.get('Materiality') == 'Material']),
-                'pending_approvals': len([r for r in ic_rec_period if r.get('Human_Approval_Required') == 'Yes'])
+                'pending_approvals': approval_summary['by_type'].get('Intercompany Variance', {}).get('pending', 0)
             },
             'accruals': {
-                'status': 'PENDING_APPROVAL',
+                'status': 'PENDING_APPROVAL' if approval_summary['by_type'].get('Accrual Variance', {}).get('pending', 0) > 0 else 'COMPLETE',
                 'total_items': len(accruals_period),
                 'material_items': len([a for a in accruals_period if a.get('Materiality') == 'Material']),
-                'pending_approvals': len([a for a in accruals_period if a.get('Status') == 'Pending_Approval'])
+                'pending_approvals': approval_summary['by_type'].get('Accrual Variance', {}).get('pending', 0)
             },
             'prepayments': {
                 'status': 'COMPLETE',
@@ -7234,20 +7187,16 @@ async def get_close_status(fiscal_period: str = Query("2026-02")):
                 'active_items': len([p for p in prepayments if p.get('Period') == fiscal_period and p.get('Status') == 'Active'])
             },
             'bank_reconciliation': {
-                'status': 'PENDING_REVIEW',
+                'status': 'PENDING_REVIEW' if approval_summary['by_type'].get('Bank Reconciliation', {}).get('pending', 0) > 0 else 'COMPLETE',
                 'total_items': len(bank_items),
                 'material_items': len([b for b in bank_items if b.get('Materiality') == 'Material']),
-                'review_items': len([b for b in bank_items if b.get('Materiality') == 'Review'])
+                'review_items': len([b for b in bank_items if b.get('Materiality') == 'Review']),
+                'pending_approvals': approval_summary['by_type'].get('Bank Reconciliation', {}).get('pending', 0)
             }
         }
         
         # Calculate overall status
-        all_pending = (
-            status['intercompany']['pending_approvals'] +
-            status['accruals']['pending_approvals'] +
-            status['bank_reconciliation']['material_items'] +
-            status['bank_reconciliation']['review_items']
-        )
+        all_pending = approval_summary['pending']
         
         overall_status = 'PENDING_APPROVAL' if all_pending > 0 else 'READY_TO_CLOSE'
         
@@ -7255,6 +7204,7 @@ async def get_close_status(fiscal_period: str = Query("2026-02")):
             'fiscal_period': fiscal_period,
             'overall_status': overall_status,
             'total_pending_items': all_pending,
+            'approval_summary': approval_summary,
             'activities': status,
             'dashboard_url': f"{APP_BASE_URL}/dashboard"
         }
@@ -7285,6 +7235,7 @@ async def startup_event():
     logger.info(f"💰 CFO Dashboard: {APP_BASE_URL}/cfo/financial_dashboard")
     logger.info(f"📧 Email Reports: {APP_BASE_URL}/reports/email/preview")
     logger.info(f"📚 API Documentation: {APP_BASE_URL}/docs")
+    logger.info(f"✅ Approval Status Check: {APP_BASE_URL}/approvals/check_status/2026-02")
     
     # Check email configuration
     api_key = os.getenv("SENDGRID_API_KEY")
@@ -7324,6 +7275,7 @@ async def startup_event():
     
     logger.info(f"📊 Data files: {files_found}/{len(required_files)} found")
     logger.info(f"📋 Pending approvals: {len(pending_approvals)}")
+    logger.info(f"📋 Registered approvals: {len(approval_registry.generated_approvals)}")
     logger.info("="*60)
     logger.info("System startup completed successfully")
     logger.info("="*60)
@@ -7342,5 +7294,6 @@ if __name__ == "__main__":
     print(f"📧 Email Reports: http://localhost:8000/reports/email/preview")
     print(f"📚 API Docs: http://localhost:8000/docs")
     print(f"🔍 Health Check: http://localhost:8000/health")
+    print(f"✅ Approval Status: http://localhost:8000/approvals/check_status/2026-02")
     print("="*60 + "\n")
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
