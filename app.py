@@ -6558,7 +6558,7 @@ async def analyze_accruals_prepayments(request: AccrualsPrepaymentsRequest):
         return ToolResponse(
             success=True,
             message=message,
-            data=responseData
+            data=response_data  # Fixed: changed from responseData to response_data
         )
         
     except Exception as e:
