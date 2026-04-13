@@ -1,0 +1,6 @@
+Item_ID,Item_Type,Description,Amount,GL_Date,Bank_Date,GL_Account_Code,Affected_GL_Txn_ID,Status,Materiality,Agent_Recommendation,Human_Approval_Required
+BR-001,Unmatched_Bank,Monthly service fee,-450.00,2026-03-01,2026-03-28,5900,,Pending,Low,Post March journal,No
+BR-002,Unmatched_Bank,Interest income,15678.45,2026-03-01,2026-03-28,4100,,Pending,Low,Post March journal,No
+BR-003,NSF_Check,Returned check - ABC Corp,-15000.00,2026-03-26,2026-03-28,1100,TXN004087,Pending,Review,Reverse deposit and follow up,Yes
+BR-004,Unmatched_GL,Payment - Unknown Vendor LLC,-1539.46,2026-03-15,,5200,TXN000377,Pending,Low,Investigate bank record,No
+BR-005,Unmatched_GL,Payment - Mystery Corp,-16110.28,2026-01-18,,5120,TXN000391,Pending,Review,Investigate prior period item,Yes
