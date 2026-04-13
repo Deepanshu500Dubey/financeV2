@@ -1,0 +1,25 @@
+JE_Number,JE_Date,Entity,Counterparty_Entity,GL_Account_Code,Account_Name,Debit_AUD,Credit_AUD,Description,Related_Txn_IDs,Prepared_By,Approved_By,Status,Notes
+ICELIM-001,2026-03-31,AUS01,NZL01,2000,Accounts Payable,623000.00,0.00,Eliminate matched IC payables to NZL01,TXN004082,AI_Agent,CFO_Pending,Draft,Balanced portion only
+ICELIM-001,2026-03-31,AUS01,NZL01,1100,Accounts Receivable,0.00,623000.00,Eliminate matched IC receivables from NZL01,TXN004081,AI_Agent,CFO_Pending,Draft,Balanced portion only
+ICELIM-002,2026-03-31,NZL01,AUS01,2000,Accounts Payable,623000.00,0.00,Eliminate matched IC payables to AUS01,TXN004087,TXN004107,AI_Agent,CFO_Pending,Draft,Balanced portion only
+ICELIM-002,2026-03-31,NZL01,AUS01,1100,Accounts Receivable,0.00,623000.00,Eliminate matched IC receivables from AUS01,TXN004106,AI_Agent,CFO_Pending,Draft,Balanced portion only
+ICELIM-003,2026-03-31,AUS01,SGP01,1100,Accounts Receivable,0.00,2937000.00,Eliminate matched IC receivables from SGP01,TXN004083,TXN004088,TXN004099,AI_Agent,CFO_Pending,Draft,Balanced portion only
+ICELIM-003,2026-03-31,AUS01,SGP01,2000,Accounts Payable,2937000.00,0.00,Eliminate matched IC payables to SGP01,TXN004084,TXN004089,TXN004100,AI_Agent,CFO_Pending,Draft,Balanced portion only
+ICELIM-004,2026-03-31,SGP01,AUS01,2000,Accounts Payable,2937000.00,0.00,Eliminate matched IC payables to AUS01,TXN004084,TXN004089,TXN004100,AI_Agent,CFO_Pending,Draft,Balanced portion only
+ICELIM-004,2026-03-31,SGP01,AUS01,1100,Accounts Receivable,0.00,2937000.00,Eliminate matched IC receivables from AUS01,TXN004083,TXN004088,TXN004099,AI_Agent,CFO_Pending,Draft,Balanced portion only
+ICELIM-005,2026-03-31,AUS01,UK01,1100,Accounts Receivable,0.00,1107750.00,Eliminate matched IC receivables from UK01 (excludes $257K variance),TXN004085,AI_Agent,CFO_Pending,Draft,Excludes $257K variance pending approval
+ICELIM-005,2026-03-31,AUS01,UK01,2000,Accounts Payable,1107750.00,0.00,Eliminate matched IC payables to UK01 (excludes $257K variance),TXN004086,AI_Agent,CFO_Pending,Draft,Excludes $257K variance pending approval
+ICELIM-006,2026-03-31,UK01,AUS01,2000,Accounts Payable,1107750.00,0.00,Eliminate matched IC payables to AUS01 (excludes $257K variance),TXN004098,AI_Agent,CFO_Pending,Draft,Excludes $257K variance pending approval
+ICELIM-006,2026-03-31,UK01,AUS01,1100,Accounts Receivable,0.00,1107750.00,Eliminate matched IC receivables from AUS01 (excludes $257K variance),TXN004096,TXN004097,AI_Agent,CFO_Pending,Draft,Excludes $257K variance pending approval
+ICELIM-007,2026-03-31,NZL01,SGP01,2000,Accounts Payable,596450.00,0.00,Eliminate matched IC payables to SGP01,TXN004091,TXN004109,AI_Agent,CFO_Pending,Draft,Balanced portion only
+ICELIM-007,2026-03-31,NZL01,SGP01,1100,Accounts Receivable,0.00,596450.00,Eliminate matched IC receivables from SGP01,TXN004090,TXN004108,AI_Agent,CFO_Pending,Draft,Balanced portion only
+ICELIM-008,2026-03-31,SGP01,NZL01,2000,Accounts Payable,596450.00,0.00,Eliminate matched IC payables to NZL01,TXN004091,TXN004109,AI_Agent,CFO_Pending,Draft,Balanced portion only
+ICELIM-008,2026-03-31,SGP01,NZL01,1100,Accounts Receivable,0.00,596450.00,Eliminate matched IC receivables from NZL01,TXN004090,TXN004108,AI_Agent,CFO_Pending,Draft,Balanced portion only
+ICELIM-009,2026-03-31,NZL01,UK01,2000,Accounts Payable,173550.00,0.00,Eliminate matched IC payables to UK01,TXN004095,TXN004111,AI_Agent,CFO_Pending,Draft,Balanced portion only
+ICELIM-009,2026-03-31,NZL01,UK01,1100,Accounts Receivable,0.00,173550.00,Eliminate matched IC receivables from UK01,TXN004094,TXN004110,AI_Agent,CFO_Pending,Draft,Balanced portion only
+ICELIM-010,2026-03-31,UK01,NZL01,2000,Accounts Payable,173550.00,0.00,Eliminate matched IC payables to NZL01,TXN004095,TXN004111,AI_Agent,CFO_Pending,Draft,Balanced portion only
+ICELIM-010,2026-03-31,UK01,NZL01,1100,Accounts Receivable,0.00,173550.00,Eliminate matched IC receivables from NZL01,TXN004094,TXN004110,AI_Agent,CFO_Pending,Draft,Balanced portion only
+ICELIM-011,2026-03-31,SGP01,UK01,2000,Accounts Payable,97500.00,0.00,Eliminate matched IC payables to UK01 (excludes wrong counterparty amount),TXN004093,TXN004104,AI_Agent,CFO_Pending,Draft,Partial - excludes wrong counterparty amount
+ICELIM-011,2026-03-31,SGP01,UK01,1100,Accounts Receivable,0.00,97500.00,Eliminate matched IC receivables from UK01 (excludes wrong counterparty amount),TXN004092,TXN004103,AI_Agent,CFO_Pending,Draft,Partial - excludes wrong counterparty amount
+ICELIM-012,2026-03-31,UK01,SGP01,2000,Accounts Payable,97500.00,0.00,Eliminate matched IC payables to SGP01 (excludes wrong counterparty amount),TXN004093,TXN004104,AI_Agent,CFO_Pending,Draft,Partial - excludes wrong counterparty amount
+ICELIM-012,2026-03-31,UK01,SGP01,1100,Accounts Receivable,0.00,97500.00,Eliminate matched IC receivables from SGP01 (excludes wrong counterparty amount),TXN004092,TXN004103,AI_Agent,CFO_Pending,Draft,Partial - excludes wrong counterparty amount
