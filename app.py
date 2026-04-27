@@ -8551,43 +8551,87 @@ def update_milestones_from_approvals(fiscal_period: str = "2026-03"):
     """
     approval_summary = approval_registry.get_approval_summary(fiscal_period)
     
-    # Update data validation milestone
-    if approval_summary.get('total_generated', 0) > 0:
+    # Data Validation - Complete when NO blocking exceptions exist
+    # Check if there are any critical blocking approvals still pending
+    blocking_types = ['Missing Cost Center', 'AR Variance Correction', 'Invalid Account Codes']
+    blocking_pending = 0
+    for btype in blocking_types:
+        blocking_pending += approval_summary.get('by_type', {}).get(btype, {}).get('pending', 0)
+    
+    if blocking_pending == 0 and approval_summary.get('total_generated', 0) > 0:
         progress_tracker.update_milestone('data_validation', True)
+    elif blocking_pending > 0:
+        progress_tracker.update_milestone('data_validation', False)
     
-    # Update cost center assignment based on missing cost center approvals
+    # Cost Center Assignment - Complete when ALL missing cost center approvals are processed
     missing_cc = approval_summary.get('by_type', {}).get('Missing Cost Center', {})
-    if missing_cc.get('pending', 0) == 0 and missing_cc.get('total', 0) > 0:
-        progress_tracker.update_milestone('cost_center_assignment', True)
+    if missing_cc.get('total', 0) > 0:
+        # Only complete if no pending and some were processed
+        if missing_cc.get('pending', 0) == 0:
+            progress_tracker.update_milestone('cost_center_assignment', True)
+        else:
+            progress_tracker.update_milestone('cost_center_assignment', False)
     
-    # Update AR reconciliation based on AR variance approvals
+    # AR Reconciliation - Complete when AR variance is resolved
     ar_var = approval_summary.get('by_type', {}).get('AR Variance Correction', {})
-    if ar_var.get('pending', 0) == 0:
+    if ar_var.get('total', 0) > 0:
+        if ar_var.get('pending', 0) == 0:
+            progress_tracker.update_milestone('ar_reconciliation', True)
+        else:
+            progress_tracker.update_milestone('ar_reconciliation', False)
+    elif approval_summary.get('total_generated', 0) == 0:
+        # No AR issues, mark as complete
         progress_tracker.update_milestone('ar_reconciliation', True)
     
-    # Update intercompany reconciliation
+    # Intercompany Reconciliation - Complete when all intercompany variances resolved
     ic_var = approval_summary.get('by_type', {}).get('Intercompany Variance', {})
-    if ic_var.get('pending', 0) == 0:
+    if ic_var.get('total', 0) > 0:
+        if ic_var.get('pending', 0) == 0:
+            progress_tracker.update_milestone('intercompany_reconciliation', True)
+        else:
+            progress_tracker.update_milestone('intercompany_reconciliation', False)
+    else:
+        # No intercompany issues, mark as complete
         progress_tracker.update_milestone('intercompany_reconciliation', True)
     
-    # Update accruals
+    # Accruals & Prepayments - Complete when all accrual variances resolved
     accrual_var = approval_summary.get('by_type', {}).get('Accrual Variance', {})
-    if accrual_var.get('pending', 0) == 0:
+    if accrual_var.get('total', 0) > 0:
+        if accrual_var.get('pending', 0) == 0:
+            progress_tracker.update_milestone('accruals_prepayments', True)
+        else:
+            progress_tracker.update_milestone('accruals_prepayments', False)
+    else:
+        # No accrual issues, mark as complete
         progress_tracker.update_milestone('accruals_prepayments', True)
     
-    # Update bank reconciliation
+    # Bank Reconciliation - Complete when all bank reconciliation items resolved
     bank_rec = approval_summary.get('by_type', {}).get('Bank Reconciliation', {})
-    if bank_rec.get('pending', 0) == 0:
+    if bank_rec.get('total', 0) > 0:
+        if bank_rec.get('pending', 0) == 0:
+            progress_tracker.update_milestone('bank_reconciliation', True)
+        else:
+            progress_tracker.update_milestone('bank_reconciliation', False)
+    else:
+        # No bank issues, mark as complete
         progress_tracker.update_milestone('bank_reconciliation', True)
     
-    # Update budget variance
+    # Budget Variance Review - Complete when all budget variances reviewed
     budget_var = approval_summary.get('by_type', {}).get('Budget Variance', {})
-    if budget_var.get('pending', 0) == 0:
+    if budget_var.get('total', 0) > 0:
+        if budget_var.get('pending', 0) == 0:
+            progress_tracker.update_milestone('budget_variance_review', True)
+        else:
+            progress_tracker.update_milestone('budget_variance_review', False)
+    else:
+        # No budget variances, mark as complete
         progress_tracker.update_milestone('budget_variance_review', True)
     
-    # Update final trial balance when all approvals processed
-    if approval_summary.get('pending', 0) == 0:
+    # Final Trial Balance - Complete when ALL approvals processed
+    if approval_summary.get('pending', 0) == 0 and approval_summary.get('total_generated', 0) > 0:
         progress_tracker.update_milestone('final_trial_balance', True)
+    elif approval_summary.get('pending', 0) > 0:
+        progress_tracker.update_milestone('final_trial_balance', False)
 
 
 # Call this periodically or when approvals are processed
@@ -8652,6 +8696,30 @@ async def startup_event():
     logger.info(f"📊 Data files: {files_found}/{len(required_files)} found")
     logger.info(f"📋 Pending approvals: {len(pending_approvals)}")
     logger.info(f"📋 Registered approvals: {len(approval_registry.generated_approvals)}")
+
+    # ================================================================
+    # ADD THIS SECTION HERE - Reset milestones and re-evaluate
+    # ================================================================
+    logger.info("🔄 Initializing milestone progress...")
+    
+    # Reset all milestones to incomplete (False) on startup
+    for milestone_key in progress_tracker.milestones:
+        progress_tracker.update_milestone(milestone_key, False)
+    
+    # Then re-evaluate based on existing approvals from registry
+    update_milestones_from_approvals("2026-03")
+    
+    # Log current milestone status
+    milestone_progress = progress_tracker.calculate_progress_percent()
+    logger.info(f"📊 Milestone Progress: {milestone_progress:.1f}%")
+    
+    incomplete = progress_tracker.get_incomplete_milestones()
+    if incomplete:
+        logger.info(f"📋 Incomplete milestones: {len(incomplete)}")
+        for m in incomplete[:3]:
+            logger.info(f"   - {m['name']} (Weight: {m['weight']}%)")
+    # ================================================================
+
     logger.info("="*60)
     logger.info("System startup completed successfully")
     logger.info("="*60)
