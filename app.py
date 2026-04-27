@@ -398,6 +398,10 @@ class ApprovalRegistry:
 # Initialize the registry
 approval_registry = ApprovalRegistry()
 
+def update_progress_from_approvals():
+    """Helper to update progress milestones after approvals"""
+    update_milestones_from_approvals("2026-03")
+
 # ============================================================================
 # DATA STORES (In-memory for demo - use database in production)
 # ============================================================================
@@ -648,6 +652,370 @@ def send_email_notification(
             "message": f"Error sending email: {str(e)}"
         }
 
+
+# ============================================================================
+# CLOSE PROGRESS DASHBOARD - TRACKS ALL DECISIONS AND PROGRESS
+# ============================================================================
+
+class CloseProgressTracker:
+    """Tracks progress of month-end close across all activities"""
+    
+    def __init__(self):
+        self.progress_file = 'close_progress.json'
+        self.milestones = {
+            'data_validation': {'name': 'Data Validation', 'weight': 10, 'completed': False},
+            'cost_center_assignment': {'name': 'Cost Center Assignment', 'weight': 10, 'completed': False},
+            'ar_reconciliation': {'name': 'AR Reconciliation', 'weight': 15, 'completed': False},
+            'intercompany_reconciliation': {'name': 'Intercompany Reconciliation', 'weight': 20, 'completed': False},
+            'accruals_prepayments': {'name': 'Accruals & Prepayments', 'weight': 15, 'completed': False},
+            'bank_reconciliation': {'name': 'Bank Reconciliation', 'weight': 15, 'completed': False},
+            'budget_variance_review': {'name': 'Budget Variance Review', 'weight': 10, 'completed': False},
+            'final_trial_balance': {'name': 'Final Trial Balance', 'weight': 5, 'completed': False}
+        }
+        self._load_progress()
+    
+    def _load_progress(self):
+        """Load saved progress from file"""
+        if os.path.exists(self.progress_file):
+            try:
+                with open(self.progress_file, 'r') as f:
+                    data = json.load(f)
+                    for key, value in data.get('milestones', {}).items():
+                        if key in self.milestones:
+                            self.milestones[key]['completed'] = value.get('completed', False)
+                logger.info(f"📊 Loaded close progress from {self.progress_file}")
+            except Exception as e:
+                logger.error(f"Error loading progress: {e}")
+    
+    def _save_progress(self):
+        """Save progress to file"""
+        try:
+            data = {
+                'milestones': self.milestones,
+                'last_updated': datetime.now().isoformat()
+            }
+            with open(self.progress_file, 'w') as f:
+                json.dump(data, f, indent=2, default=str)
+            logger.info(f"💾 Saved close progress to {self.progress_file}")
+        except Exception as e:
+            logger.error(f"Error saving progress: {e}")
+    
+    def update_milestone(self, milestone_key: str, completed: bool):
+        """Update a milestone status"""
+        if milestone_key in self.milestones:
+            self.milestones[milestone_key]['completed'] = completed
+            self._save_progress()
+            logger.info(f"📊 Milestone '{milestone_key}' updated to {completed}")
+    
+    def calculate_progress_percent(self) -> float:
+        """Calculate overall progress percentage based on completed milestones"""
+        total_weight = sum(m['weight'] for m in self.milestones.values())
+        completed_weight = sum(m['weight'] for m in self.milestones.values() if m['completed'])
+        return (completed_weight / total_weight * 100) if total_weight > 0 else 0
+    
+    def get_incomplete_milestones(self) -> List[Dict]:
+        """Get list of incomplete milestones"""
+        return [
+            {'key': key, 'name': data['name'], 'weight': data['weight']}
+            for key, data in self.milestones.items() if not data['completed']
+        ]
+
+
+# Initialize progress tracker
+progress_tracker = CloseProgressTracker()
+
+def update_milestones_from_approvals(fiscal_period: str = "2026-03"):
+    """
+    Automatically update milestone completion based on approval status
+    """
+    approval_summary = approval_registry.get_approval_summary(fiscal_period)
+    
+    # Update data validation milestone
+    if approval_summary.get('total_generated', 0) > 0:
+        progress_tracker.update_milestone('data_validation', True)
+    
+    # Update cost center assignment based on missing cost center approvals
+    missing_cc = approval_summary.get('by_type', {}).get('Missing Cost Center', {})
+    if missing_cc.get('pending', 0) == 0 and missing_cc.get('total', 0) > 0:
+        progress_tracker.update_milestone('cost_center_assignment', True)
+    
+    # Update AR reconciliation based on AR variance approvals
+    ar_var = approval_summary.get('by_type', {}).get('AR Variance Correction', {})
+    if ar_var.get('pending', 0) == 0:
+        progress_tracker.update_milestone('ar_reconciliation', True)
+    
+    # Update intercompany reconciliation
+    ic_var = approval_summary.get('by_type', {}).get('Intercompany Variance', {})
+    if ic_var.get('pending', 0) == 0:
+        progress_tracker.update_milestone('intercompany_reconciliation', True)
+    
+    # Update accruals
+    accrual_var = approval_summary.get('by_type', {}).get('Accrual Variance', {})
+    if accrual_var.get('pending', 0) == 0:
+        progress_tracker.update_milestone('accruals_prepayments', True)
+    
+    # Update bank reconciliation
+    bank_rec = approval_summary.get('by_type', {}).get('Bank Reconciliation', {})
+    if bank_rec.get('pending', 0) == 0:
+        progress_tracker.update_milestone('bank_reconciliation', True)
+    
+    # Update budget variance
+    budget_var = approval_summary.get('by_type', {}).get('Budget Variance', {})
+    if budget_var.get('pending', 0) == 0:
+        progress_tracker.update_milestone('budget_variance_review', True)
+    
+    # Update final trial balance when all approvals processed
+    if approval_summary.get('pending', 0) == 0:
+        progress_tracker.update_milestone('final_trial_balance', True)
+
+# ============================================================================
+# THEN ADD THIS HELPER (if you want a simpler function name)
+# ============================================================================
+
+def update_progress_from_approvals():
+    """Helper to update progress milestones after approvals"""
+    update_milestones_from_approvals("2026-03")
+
+
+def analyze_close_readiness(fiscal_period: str = "2026-03") -> Dict[str, Any]:
+    """
+    Comprehensive analysis of close readiness based on current state
+    """
+    # Get approval summary from registry
+    approval_summary = approval_registry.get_approval_summary(fiscal_period)
+    
+    # Categorize approvals by status
+    approved_items = []
+    pending_items = []
+    rejected_items = []
+    assigned_items = []
+    
+    for token, info in approval_registry.generated_approvals.items():
+        if info.get('fiscal_period') != fiscal_period:
+            continue
+        
+        item_data = {
+            'token': token,
+            'type': info.get('type', 'Unknown'),
+            'description': info.get('description', ''),
+            'amount': float(info.get('amount', 0)) if info.get('amount') else 0,
+            'created_at': info.get('created_at', ''),
+            'metadata_summary': info.get('metadata_summary', '')
+        }
+        
+        status = info.get('status', 'PENDING')
+        if status == 'APPROVED':
+            approved_items.append(item_data)
+        elif status == 'REJECTED':
+            rejected_items.append(item_data)
+        elif status == 'ASSIGNED':
+            assigned_items.append(item_data)
+        else:
+            pending_items.append(item_data)
+    
+    # Calculate aging for pending items
+    now = datetime.now()
+    overdue_items = []
+    for item in pending_items:
+        created_at = item.get('created_at')
+        if created_at:
+            try:
+                created_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                days_pending = (now - created_date).days
+                if days_pending > 2:  # Overdue if > 2 days
+                    overdue_items.append({
+                        **item,
+                        'days_pending': days_pending
+                    })
+            except Exception:
+                pass
+    
+    # Identify blockers
+    blockers = []
+    
+    # Check for pending approvals by type
+    pending_by_type = {}
+    for item in pending_items:
+        item_type = item['type']
+        pending_by_type[item_type] = pending_by_type.get(item_type, 0) + 1
+    
+    # Critical blockers (must be resolved to close)
+    critical_blockers = []
+    
+    # AR/GL variance is critical
+    if pending_by_type.get('AR Variance Correction', 0) > 0:
+        critical_blockers.append({
+            'type': 'AR/GL Variance',
+            'severity': 'CRITICAL',
+            'count': pending_by_type['AR Variance Correction'],
+            'action': 'Approve variance correction journal entry'
+        })
+    
+    # Missing cost centers (if unassigned)
+    if pending_by_type.get('Missing Cost Center', 0) > 0:
+        critical_blockers.append({
+            'type': 'Missing Cost Centers',
+            'severity': 'HIGH',
+            'count': pending_by_type['Missing Cost Center'],
+            'action': 'Assign cost centers to transactions'
+        })
+    
+    # Intercompany variances
+    if pending_by_type.get('Intercompany Variance', 0) > 0:
+        critical_blockers.append({
+            'type': 'Intercompany Variance',
+            'severity': 'HIGH',
+            'count': pending_by_type['Intercompany Variance'],
+            'action': 'Review and approve intercompany elimination journals'
+        })
+    
+    # High severity material variances
+    if pending_by_type.get('Accrual Variance', 0) > 0:
+        critical_blockers.append({
+            'type': 'Accrual Variance',
+            'severity': 'MEDIUM',
+            'count': pending_by_type['Accrual Variance'],
+            'action': 'Post adjustment journals for accruals'
+        })
+    
+    if pending_by_type.get('Budget Variance', 0) > 0:
+        blockers.append({
+            'type': 'Budget Variance',
+            'severity': 'LOW',
+            'count': pending_by_type['Budget Variance'],
+            'action': 'Review significant budget variances'
+        })
+    
+    if pending_by_type.get('Bank Reconciliation', 0) > 0:
+        blockers.append({
+            'type': 'Bank Reconciliation Exceptions',
+            'severity': 'MEDIUM',
+            'count': pending_by_type['Bank Reconciliation'],
+            'action': 'Review and resolve reconciling items'
+        })
+    
+    # Determine overall status
+    if critical_blockers:
+        overall_status = 'BLOCKED'
+        status_message = f"❌ BLOCKED - {len(critical_blockers)} critical issues require immediate attention"
+    elif pending_items:
+        overall_status = 'AT_RISK'
+        status_message = f"⚠️ AT RISK - {len(pending_items)} items pending approval"
+    elif not pending_items and not critical_blockers:
+        overall_status = 'READY'
+        status_message = f"✅ READY - All approvals processed, ready to close"
+    else:
+        overall_status = 'IN_PROGRESS'
+        status_message = f"🔄 IN PROGRESS - {len(pending_items)} items under review"
+    
+    # Calculate progress
+    total_approvals = len(approval_registry.generated_approvals)
+    processed_approvals = len(approved_items) + len(rejected_items)
+    progress_percent = (processed_approvals / total_approvals * 100) if total_approvals > 0 else 100
+    
+    # Get milestone progress
+    milestone_progress = progress_tracker.calculate_progress_percent()
+    
+    return {
+        'fiscal_period': fiscal_period,
+        'timestamp': datetime.now().isoformat(),
+        'summary': {
+            'total_approvals_generated': total_approvals,
+            'approved': len(approved_items),
+            'rejected': len(rejected_items),
+            'pending': len(pending_items),
+            'assigned': len(assigned_items),
+            'overdue': len(overdue_items),
+            'progress_percent': progress_percent,
+            'milestone_progress_percent': milestone_progress
+        },
+        'overall_status': overall_status,
+        'status_message': status_message,
+        'critical_blockers': critical_blockers,
+        'other_blockers': blockers,
+        'pending_items': pending_items,
+        'overdue_items': overdue_items,
+        'approved_items': approved_items,
+        'assigned_items': assigned_items,
+        'pending_by_type': pending_by_type,
+        'incomplete_milestones': progress_tracker.get_incomplete_milestones()
+    }
+
+
+def generate_cfo_summary(analysis: Dict[str, Any]) -> str:
+    """
+    Generate a plain English summary for CFO
+    """
+    fiscal_period = analysis['fiscal_period']
+    summary = analysis['summary']
+    status = analysis['overall_status']
+    blockers = analysis['critical_blockers'] + analysis['other_blockers']
+    pending_by_type = analysis['pending_by_type']
+    
+    # Format period
+    period_parts = fiscal_period.split('-')
+    period_str = f"{datetime(int(period_parts[0]), int(period_parts[1]), 1).strftime('%B %Y')}"
+    
+    # Build the summary
+    lines = []
+    
+    # Opening line with progress
+    progress = summary['progress_percent']
+    lines.append(f"📊 **{period_str} Close Progress: {progress:.0f}% complete**")
+    
+    # Status line
+    if status == 'BLOCKED':
+        lines.append(f"🚨 **Status: BLOCKED** - Cannot proceed until critical issues are resolved.")
+    elif status == 'AT_RISK':
+        lines.append(f"⚠️ **Status: At Risk** - Close can proceed but requires immediate attention on pending items.")
+    elif status == 'READY':
+        lines.append(f"✅ **Status: Ready to Close** - All approvals processed. Final validation can proceed.")
+    else:
+        lines.append(f"🔄 **Status: In Progress** - Work is ongoing.")
+    
+    # Blockers section
+    if blockers:
+        lines.append(f"\n**🚫 Blockers ({len(blockers)}):**")
+        for i, blocker in enumerate(blockers[:5], 1):
+            severity_icon = "🔴" if blocker['severity'] == 'CRITICAL' else "🟠" if blocker['severity'] == 'HIGH' else "🟡"
+            lines.append(f"  {i}) {severity_icon} **{blocker['type']}** - {blocker['action']}")
+    
+    # Pending items summary
+    if pending_by_type:
+        lines.append(f"\n**⏳ Items Pending ({summary['pending']} total):**")
+        for item_type, count in list(pending_by_type.items())[:5]:
+            lines.append(f"  • {count} × {item_type}")
+    
+    # Overdue items
+    if summary['overdue'] > 0:
+        lines.append(f"\n**⚠️ Overdue Items ({summary['overdue']}):**")
+        lines.append(f"  {summary['overdue']} items have been pending for more than 2 days.")
+    
+    # Recommended actions
+    lines.append(f"\n**🎯 Recommended Path to Close:**")
+    
+    if status == 'BLOCKED':
+        lines.append(f"  1. **Immediate:** Address {len(analysis['critical_blockers'])} critical blockers")
+        for i, blocker in enumerate(analysis['critical_blockers'][:3], 1):
+            lines.append(f"     - {blocker['action']}")
+        lines.append(f"  2. **Next:** Process remaining {summary['pending']} pending approvals")
+        lines.append(f"  3. **Final:** Run final trial balance validation and obtain CFO sign-off")
+    elif status == 'AT_RISK':
+        lines.append(f"  1. **Priority:** Process {summary['pending']} pending approvals within 24 hours")
+        if analysis['overdue_items']:
+            lines.append(f"     - Focus on {len(analysis['overdue_items'])} overdue items first")
+        lines.append(f"  2. **Secondary:** Complete intercompany and bank reconciliations")
+        lines.append(f"  3. **Final:** Generate final statements and close the period")
+    else:
+        lines.append(f"  1. Run final trial balance validation")
+        lines.append(f"  2. Generate close summary report")
+        lines.append(f"  3. Obtain CFO sign-off and lock the period")
+    
+    # Completed items
+    if summary['approved'] > 0:
+        lines.append(f"\n**✅ Completed Items:** {summary['approved']} approvals processed successfully.")
+    
+    return "\n".join(lines)
 # ============================================================================
 # HELPER FUNCTION FOR TRIAL BALANCE DATA
 # ============================================================================
@@ -2748,11 +3116,15 @@ async def decide_approval(
     approval_history.append(history_record)
     
     # UPDATE REGISTRY
+    # UPDATE REGISTRY
     approval_registry.update_approval_status(
         token, 
         item.status.value,
         decision='approved' if approved else 'rejected'
     )
+
+    # ✅ ADD THIS LINE HERE - Update progress milestones after approval
+    update_progress_from_approvals()
     
     # Remove from pending
     del pending_approvals[token]
@@ -2847,6 +3219,9 @@ async def batch_approve(request: ApprovalBatchRequest):
             results.append({"token": token, "status": "success", "decision": request.approved})
         else:
             results.append({"token": token, "status": "not_found"})
+
+    # ✅ ADD THIS LINE HERE - Update progress milestones after batch approval
+    update_progress_from_approvals()
     
     return {
         "success": True,
@@ -2907,6 +3282,9 @@ async def approve_all_pending(
             results.append({"token": token, "status": "success"})
     
     logger.info(f"Bulk approved {len(results)} items by {reviewer}")
+
+    # ✅ ADD THIS LINE HERE - Update progress milestones
+    update_progress_from_approvals()
     
     return {
         "success": True,
@@ -2968,6 +3346,9 @@ async def reject_all_pending(
             results.append({"token": token, "status": "success"})
     
     logger.info(f"Bulk rejected {len(results)} items by {reviewer}")
+
+    # ✅ ADD THIS LINE HERE - Update progress milestones
+    update_progress_from_approvals()
     
     return {
         "success": True,
@@ -7352,6 +7733,869 @@ async def get_close_status(fiscal_period: str = Query("2026-03")):
     except Exception as e:
         logger.error(f"Error getting close status: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+@app.get("/dashboard/progress", response_class=HTMLResponse)
+async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
+    """
+    Comprehensive close progress dashboard that tracks all decisions and provides real-time status
+    """
+    # Load analysis data
+    analysis = analyze_close_readiness(fiscal_period)
+    cfo_summary = generate_cfo_summary(analysis)
+    
+    # Load logo as base64
+    logo_base64 = ""
+    try:
+        with open("Octane_logo.png", "rb") as logo_file:
+            logo_base64 = base64.b64encode(logo_file.read()).decode('utf-8')
+    except Exception as e:
+        logger.warning(f"Could not load logo: {e}")
+    
+    # Format numbers for display
+    progress = analysis['summary']['progress_percent']
+    milestone_progress = analysis['summary']['milestone_progress_percent']
+    
+    # Determine progress bar color
+    if progress >= 90:
+        progress_color = "#000000"
+    elif progress >= 70:
+        progress_color = "#333333"
+    elif progress >= 50:
+        progress_color = "#666666"
+    else:
+        progress_color = "#999999"
+    
+    # Status color
+    status_colors = {
+        'BLOCKED': '#dc3545',
+        'AT_RISK': '#fd7e14',
+        'READY': '#28a745',
+        'IN_PROGRESS': '#007bff'
+    }
+    status_color = status_colors.get(analysis['overall_status'], '#666666')
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Close Progress Dashboard - {fiscal_period}</title>
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            
+            body {{
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                background: #f5f5f5;
+                padding: 20px;
+            }}
+            
+            .dashboard-container {{
+                max-width: 1400px;
+                margin: 0 auto;
+            }}
+            
+            /* Header */
+            .dashboard-header {{
+                background: #000000;
+                color: white;
+                padding: 25px 30px;
+                border-radius: 15px;
+                margin-bottom: 25px;
+                display: flex;
+                align-items: center;
+                gap: 25px;
+                flex-wrap: wrap;
+            }}
+            
+            .header-logo {{
+                height: 50px;
+            }}
+            
+            .header-title {{
+                flex-grow: 1;
+            }}
+            
+            .header-title h1 {{
+                font-size: 1.8em;
+                margin-bottom: 5px;
+            }}
+            
+            .header-title p {{
+                opacity: 0.8;
+            }}
+            
+            .period-selector {{
+                display: flex;
+                gap: 10px;
+                align-items: center;
+            }}
+            
+            .period-selector select {{
+                padding: 10px 15px;
+                border-radius: 8px;
+                border: none;
+                font-size: 1em;
+                background: #333;
+                color: white;
+            }}
+            
+            .period-selector button {{
+                padding: 10px 20px;
+                background: #333;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                cursor: pointer;
+                transition: background 0.3s;
+            }}
+            
+            .period-selector button:hover {{
+                background: #555;
+            }}
+            
+            /* Refresh button */
+            .refresh-btn {{
+                background: #333;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 8px;
+                cursor: pointer;
+                font-size: 1em;
+                transition: background 0.3s;
+            }}
+            
+            .refresh-btn:hover {{
+                background: #555;
+            }}
+            
+            /* Status Cards */
+            .status-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 20px;
+                margin-bottom: 25px;
+            }}
+            
+            .status-card {{
+                background: white;
+                padding: 20px;
+                border-radius: 15px;
+                text-align: center;
+                box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+                transition: transform 0.3s;
+            }}
+            
+            .status-card:hover {{
+                transform: translateY(-3px);
+            }}
+            
+            .status-card .number {{
+                font-size: 2.5em;
+                font-weight: bold;
+                color: #000000;
+            }}
+            
+            .status-card .label {{
+                color: #666;
+                margin-top: 8px;
+                font-size: 0.9em;
+            }}
+            
+            /* Main Status Banner */
+            .main-status {{
+                background: white;
+                border-radius: 15px;
+                margin-bottom: 25px;
+                overflow: hidden;
+                box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+            }}
+            
+            .status-banner {{
+                padding: 25px;
+                background: linear-gradient(135deg, {status_color} 0%, {status_color}cc 100%);
+                color: white;
+            }}
+            
+            .status-banner h2 {{
+                font-size: 1.5em;
+                margin-bottom: 8px;
+            }}
+            
+            .status-banner p {{
+                opacity: 0.95;
+                font-size: 1.1em;
+            }}
+            
+            /* Progress Bars */
+            .progress-section {{
+                padding: 25px;
+                border-bottom: 1px solid #e0e0e0;
+            }}
+            
+            .progress-item {{
+                margin-bottom: 20px;
+            }}
+            
+            .progress-label {{
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 8px;
+                color: #333;
+                font-weight: 500;
+            }}
+            
+            .progress-bar-container {{
+                background: #e0e0e0;
+                border-radius: 20px;
+                overflow: hidden;
+                height: 12px;
+            }}
+            
+            .progress-bar-fill {{
+                background: {progress_color};
+                height: 100%;
+                border-radius: 20px;
+                transition: width 0.5s ease;
+                width: {progress}%;
+            }}
+            
+            .progress-bar-fill.milestone {{
+                background: #666666;
+            }}
+            
+            /* Two Column Layout */
+            .two-column {{
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 25px;
+                margin-bottom: 25px;
+            }}
+            
+            /* Cards */
+            .card {{
+                background: white;
+                border-radius: 15px;
+                overflow: hidden;
+                box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+            }}
+            
+            .card-header {{
+                background: #f8f9fa;
+                padding: 15px 20px;
+                border-bottom: 2px solid #000000;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }}
+            
+            .card-header h3 {{
+                margin: 0;
+                color: #000000;
+            }}
+            
+            .card-header .badge {{
+                background: #000000;
+                color: white;
+                padding: 4px 10px;
+                border-radius: 20px;
+                font-size: 0.8em;
+            }}
+            
+            .card-content {{
+                padding: 20px;
+                max-height: 400px;
+                overflow-y: auto;
+            }}
+            
+            /* Item Lists */
+            .item-list {{
+                list-style: none;
+                padding: 0;
+            }}
+            
+            .item-list li {{
+                padding: 12px;
+                border-bottom: 1px solid #f0f0f0;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 10px;
+            }}
+            
+            .item-list li:last-child {{
+                border-bottom: none;
+            }}
+            
+            .item-type {{
+                font-weight: 600;
+                color: #000000;
+                min-width: 140px;
+            }}
+            
+            .item-description {{
+                flex-grow: 1;
+                color: #555;
+                font-size: 0.9em;
+            }}
+            
+            .item-amount {{
+                font-weight: 500;
+                color: #333;
+                min-width: 100px;
+                text-align: right;
+            }}
+            
+            .item-action {{
+                min-width: 80px;
+                text-align: right;
+            }}
+            
+            .item-action a {{
+                color: #000000;
+                text-decoration: none;
+                font-size: 0.85em;
+            }}
+            
+            .item-action a:hover {{
+                text-decoration: underline;
+            }}
+            
+            .status-badge {{
+                display: inline-block;
+                padding: 3px 8px;
+                border-radius: 12px;
+                font-size: 0.7em;
+                font-weight: 500;
+            }}
+            
+            .status-critical {{
+                background: #dc3545;
+                color: white;
+            }}
+            
+            .status-high {{
+                background: #fd7e14;
+                color: white;
+            }}
+            
+            .status-medium {{
+                background: #ffc107;
+                color: #333;
+            }}
+            
+            .status-low {{
+                background: #28a745;
+                color: white;
+            }}
+            
+            .overdue {{
+                background: #dc3545;
+                color: white;
+            }}
+            
+            /* CFO Summary Box */
+            .cfo-summary {{
+                background: #f8f9fa;
+                border-left: 4px solid #000000;
+                padding: 20px;
+                margin-bottom: 25px;
+                border-radius: 10px;
+                font-size: 0.95em;
+                line-height: 1.6;
+                white-space: pre-line;
+            }}
+            
+            .cfo-summary h3 {{
+                color: #000000;
+                margin-bottom: 12px;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }}
+            
+            /* Milestones */
+            .milestone-item {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 12px;
+                border-bottom: 1px solid #f0f0f0;
+            }}
+            
+            .milestone-name {{
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }}
+            
+            .milestone-status {{
+                width: 24px;
+                height: 24px;
+                border-radius: 50%;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 0.8em;
+            }}
+            
+            .milestone-status.completed {{
+                background: #000000;
+                color: white;
+            }}
+            
+            .milestone-status.pending {{
+                background: #e0e0e0;
+                color: #666;
+            }}
+            
+            .milestone-weight {{
+                color: #666;
+                font-size: 0.8em;
+            }}
+            
+            /* Footer */
+            .footer {{
+                text-align: center;
+                margin-top: 30px;
+                padding: 20px;
+                color: #666;
+                border-top: 1px solid #e0e0e0;
+            }}
+            
+            .footer a {{
+                color: #000000;
+                text-decoration: none;
+                margin: 0 10px;
+            }}
+            
+            /* Responsive */
+            @media (max-width: 768px) {{
+                .two-column {{
+                    grid-template-columns: 1fr;
+                }}
+                
+                .dashboard-header {{
+                    flex-direction: column;
+                    text-align: center;
+                }}
+            }}
+            
+            /* Auto-refresh indicator */
+            .auto-refresh {{
+                font-size: 0.8em;
+                color: #888;
+                margin-top: 5px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="dashboard-container">
+            <!-- Header -->
+            <div class="dashboard-header">
+                <img src="data:image/png;base64,{logo_base64}" alt="Octane Logo" class="header-logo">
+                <div class="header-title">
+                    <h1>📊 Close Progress Dashboard</h1>
+                    <p>Real-time tracking of month-end close activities and approvals</p>
+                </div>
+                <div class="period-selector">
+                    <select id="periodSelect">
+                        <option value="2026-03" {'selected' if fiscal_period == '2026-03' else ''}>March 2026</option>
+                        <option value="2026-02" {'selected' if fiscal_period == '2026-02' else ''}>February 2026</option>
+                        <option value="2026-01" {'selected' if fiscal_period == '2026-01' else ''}>January 2026</option>
+                    </select>
+                    <button onclick="changePeriod()">Go</button>
+                    <button class="refresh-btn" onclick="refreshDashboard()">🔄 Refresh</button>
+                </div>
+            </div>
+            
+            <!-- Status Cards -->
+            <div class="status-grid">
+                <div class="status-card">
+                    <div class="number">{analysis['summary']['progress_percent']:.0f}%</div>
+                    <div class="label">Overall Progress</div>
+                </div>
+                <div class="status-card">
+                    <div class="number">{analysis['summary']['total_approvals_generated']}</div>
+                    <div class="label">Total Items</div>
+                </div>
+                <div class="status-card">
+                    <div class="number">{analysis['summary']['approved']}</div>
+                    <div class="label">Approved</div>
+                </div>
+                <div class="status-card">
+                    <div class="number">{analysis['summary']['pending']}</div>
+                    <div class="label">Pending</div>
+                </div>
+                <div class="status-card">
+                    <div class="number">{analysis['summary']['overdue']}</div>
+                    <div class="label">Overdue</div>
+                </div>
+            </div>
+            
+            <!-- Main Status Banner -->
+            <div class="main-status">
+                <div class="status-banner">
+                    <h2>{analysis['overall_status']} - {analysis['status_message']}</h2>
+                    <p>Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                </div>
+                
+                <div class="progress-section">
+                    <div class="progress-item">
+                        <div class="progress-label">
+                            <span>📋 Approval Progress</span>
+                            <span>{analysis['summary']['progress_percent']:.1f}%</span>
+                        </div>
+                        <div class="progress-bar-container">
+                            <div class="progress-bar-fill" style="width: {analysis['summary']['progress_percent']}%"></div>
+                        </div>
+                    </div>
+                    <div class="progress-item">
+                        <div class="progress-label">
+                            <span>🎯 Milestone Progress</span>
+                            <span>{milestone_progress:.1f}%</span>
+                        </div>
+                        <div class="progress-bar-container">
+                            <div class="progress-bar-fill milestone" style="width: {milestone_progress}%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- CFO Summary -->
+            <div class="cfo-summary">
+                <h3>
+                    <span>📝</span> CFO Executive Summary
+                    <span style="font-size: 0.7em; background: #000000; color: white; padding: 2px 8px; border-radius: 12px;">{fiscal_period}</span>
+                </h3>
+                <div id="cfoSummaryText">{cfo_summary.replace(chr(10), '<br>')}</div>
+            </div>
+            
+            <!-- Two Column Layout -->
+            <div class="two-column">
+                <!-- Blockers & Critical Items -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🚫 Blockers & Critical Items</h3>
+                        <span class="badge">{len(analysis['critical_blockers'])} Critical</span>
+                    </div>
+                    <div class="card-content">
+                        {_render_blockers_html(analysis['critical_blockers'], analysis['other_blockers'])}
+                    </div>
+                </div>
+                
+                <!-- Pending Items -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3>⏳ Pending Approvals</h3>
+                        <span class="badge">{analysis['summary']['pending']} Items</span>
+                    </div>
+                    <div class="card-content">
+                        {_render_pending_items_html(analysis['pending_items'], analysis['overdue_items'])}
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Second Row -->
+            <div class="two-column">
+                <!-- Milestones -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🎯 Close Milestones</h3>
+                        <span class="badge">{len(analysis['incomplete_milestones'])} Remaining</span>
+                    </div>
+                    <div class="card-content">
+                        {_render_milestones_html(analysis['incomplete_milestones'])}
+                    </div>
+                </div>
+                
+                <!-- Recent Activity / Audit Trail -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3>📋 Recent Activity</h3>
+                        <span class="badge">Audit Trail</span>
+                    </div>
+                    <div class="card-content">
+                        {_render_audit_trail_html(analysis['approved_items'], analysis['assigned_items'])}
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Footer -->
+            <div class="footer">
+                <a href="/dashboard">← Approval Dashboard</a>
+                <a href="/cfo/financial_dashboard">💰 CFO Dashboard</a>
+                <a href="/reports/email/preview">📧 Email Reports</a>
+                <a href="/approvals/history">📋 Approval History</a>
+                <p style="margin-top: 15px;">Finance Month-End Close AI Agent v3.0.0 | Auto-refreshes every 30 seconds</p>
+                <div class="auto-refresh">🔄 Live updates - data refreshes automatically</div>
+            </div>
+        </div>
+        
+        <script>
+            let refreshInterval;
+            
+            function refreshDashboard() {{
+                const period = document.getElementById('periodSelect').value;
+                window.location.href = `/dashboard/progress?fiscal_period=${{period}}`;
+            }}
+            
+            function changePeriod() {{
+                refreshDashboard();
+            }}
+            
+            function startAutoRefresh() {{
+                if (refreshInterval) clearInterval(refreshInterval);
+                refreshInterval = setInterval(() => {{
+                    const period = document.getElementById('periodSelect').value;
+                    fetch(`/api/close/progress?fiscal_period=${{period}}`)
+                        .then(response => response.json())
+                        .then(data => {{
+                            updateDashboardData(data);
+                        }})
+                        .catch(err => console.error('Auto-refresh error:', err));
+                }}, 30000);
+            }}
+            
+            function updateDashboardData(data) {{
+                // Update numbers
+                document.querySelectorAll('.status-card')[0].querySelector('.number').textContent = data.summary.progress_percent.toFixed(0) + '%';
+                document.querySelectorAll('.status-card')[1].querySelector('.number').textContent = data.summary.total_approvals_generated;
+                document.querySelectorAll('.status-card')[2].querySelector('.number').textContent = data.summary.approved;
+                document.querySelectorAll('.status-card')[3].querySelector('.number').textContent = data.summary.pending;
+                document.querySelectorAll('.status-card')[4].querySelector('.number').textContent = data.summary.overdue;
+                
+                // Update status banner
+                const statusBanner = document.querySelector('.status-banner');
+                statusBanner.querySelector('h2').textContent = data.overall_status + ' - ' + data.status_message;
+                
+                // Update progress bars
+                document.querySelector('.progress-bar-fill').style.width = data.summary.progress_percent + '%';
+                document.querySelector('.progress-label span:last-child').textContent = data.summary.progress_percent.toFixed(1) + '%';
+                
+                // Update CFO summary
+                document.getElementById('cfoSummaryText').innerHTML = data.cfo_summary.replace(/\\n/g, '<br>');
+            }}
+            
+            // Start auto-refresh on page load
+            startAutoRefresh();
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+
+def _render_blockers_html(critical_blockers: List[Dict], other_blockers: List[Dict]) -> str:
+    """Render blockers list as HTML"""
+    if not critical_blockers and not other_blockers:
+        return '<p style="color: #666; text-align: center;">✅ No blockers detected</p>'
+    
+    html = '<ul class="item-list">'
+    
+    for blocker in critical_blockers:
+        severity_class = 'status-critical' if blocker['severity'] == 'CRITICAL' else 'status-high'
+        html += f'''
+            <li>
+                <span class="item-type">
+                    <span class="status-badge {severity_class}">{blocker['severity']}</span>
+                    {blocker['type']}
+                </span>
+                <span class="item-description">{blocker['action']}</span>
+                <span class="item-amount">📊 {blocker['count']} item(s)</span>
+            </li>
+        '''
+    
+    for blocker in other_blockers:
+        severity_class = 'status-medium' if blocker['severity'] == 'MEDIUM' else 'status-low'
+        html += f'''
+            <li>
+                <span class="item-type">
+                    <span class="status-badge {severity_class}">{blocker['severity']}</span>
+                    {blocker['type']}
+                </span>
+                <span class="item-description">{blocker['action']}</span>
+                <span class="item-amount">📊 {blocker['count']} item(s)</span>
+            </li>
+        '''
+    
+    html += '</ul>'
+    return html
+
+
+def _render_pending_items_html(pending_items: List[Dict], overdue_items: List[Dict]) -> str:
+    """Render pending items list as HTML"""
+    if not pending_items:
+        return '<p style="color: #666; text-align: center;">✅ No pending items</p>'
+    
+    html = '<ul class="item-list">'
+    
+    # Show overdue items first
+    for item in overdue_items:
+        html += f'''
+            <li style="background: #fff3f3;">
+                <span class="item-type">
+                    <span class="status-badge overdue">OVERDUE</span>
+                    {item['type']}
+                </span>
+                <span class="item-description">{item['description'][:50]}...</span>
+                <span class="item-amount">💰 ${item['amount']:,.0f}</span>
+                <span class="item-action">
+                    <a href="/dashboard/approvals/{item['token']}" target="_blank">View →</a>
+                </span>
+            </li>
+        '''
+    
+    # Show other pending items
+    for item in pending_items:
+        if item not in overdue_items:
+            html += f'''
+                <li>
+                    <span class="item-type">
+                        <span class="status-badge status-medium">PENDING</span>
+                        {item['type']}
+                    </span>
+                    <span class="item-description">{item['description'][:50]}...</span>
+                    <span class="item-amount">💰 ${item['amount']:,.0f}</span>
+                    <span class="item-action">
+                        <a href="/dashboard/approvals/{item['token']}" target="_blank">View →</a>
+                    </span>
+                </li>
+            '''
+    
+    html += '</ul>'
+    return html
+
+
+def _render_milestones_html(incomplete_milestones: List[Dict]) -> str:
+    """Render milestones list as HTML"""
+    if not incomplete_milestones:
+        return '<p style="color: #666; text-align: center;">🎉 All milestones complete! Ready to close.</p>'
+    
+    html = '<ul class="item-list">'
+    for milestone in incomplete_milestones:
+        html += f'''
+            <li class="milestone-item">
+                <div class="milestone-name">
+                    <span class="milestone-status pending">○</span>
+                    <strong>{milestone['name']}</strong>
+                </div>
+                <div class="milestone-weight">Weight: {milestone['weight']}%</div>
+            </li>
+        '''
+    html += '</ul>'
+    return html
+
+
+def _render_audit_trail_html(approved_items: List[Dict], assigned_items: List[Dict]) -> str:
+    """Render audit trail as HTML"""
+    if not approved_items and not assigned_items:
+        return '<p style="color: #666; text-align: center;">No recent activity</p>'
+    
+    html = '<ul class="item-list">'
+    
+    # Show recently approved (last 5)
+    for item in approved_items[:5]:
+        html += f'''
+            <li>
+                <span class="item-type">✅ APPROVED</span>
+                <span class="item-description">{item['type']}</span>
+                <span class="item-amount">💰 ${item['amount']:,.0f}</span>
+            </li>
+        '''
+    
+    # Show assigned items
+    for item in assigned_items[:3]:
+        html += f'''
+            <li>
+                <span class="item-type">👤 ASSIGNED</span>
+                <span class="item-description">{item['type']}</span>
+                <span class="item-description">{item['metadata_summary'][:30] if item['metadata_summary'] else ''}</span>
+            </li>
+        '''
+    
+    html += '</ul>'
+    
+    if len(approved_items) > 5:
+        html += f'<p style="text-align: center; margin-top: 10px;"><a href="/approvals/history">View all {len(approved_items)} approved items →</a></p>'
+    
+    return html
+
+
+# ============================================================================
+# API Endpoint for JSON data (for auto-refresh)
+# ============================================================================
+
+@app.get("/api/close/progress")
+async def get_close_progress_api(fiscal_period: str = Query("2026-03")):
+    """
+    API endpoint to get close progress data as JSON (for auto-refresh)
+    """
+    analysis = analyze_close_readiness(fiscal_period)
+    cfo_summary = generate_cfo_summary(analysis)
+    
+    return {
+        **analysis,
+        'cfo_summary': cfo_summary
+    }
+
+
+# ============================================================================
+# Helper function to update milestones based on approval completion
+# ============================================================================
+
+def update_milestones_from_approvals(fiscal_period: str = "2026-03"):
+    """
+    Automatically update milestone completion based on approval status
+    """
+    approval_summary = approval_registry.get_approval_summary(fiscal_period)
+    
+    # Update data validation milestone
+    if approval_summary.get('total_generated', 0) > 0:
+        progress_tracker.update_milestone('data_validation', True)
+    
+    # Update cost center assignment based on missing cost center approvals
+    missing_cc = approval_summary.get('by_type', {}).get('Missing Cost Center', {})
+    if missing_cc.get('pending', 0) == 0 and missing_cc.get('total', 0) > 0:
+        progress_tracker.update_milestone('cost_center_assignment', True)
+    
+    # Update AR reconciliation based on AR variance approvals
+    ar_var = approval_summary.get('by_type', {}).get('AR Variance Correction', {})
+    if ar_var.get('pending', 0) == 0:
+        progress_tracker.update_milestone('ar_reconciliation', True)
+    
+    # Update intercompany reconciliation
+    ic_var = approval_summary.get('by_type', {}).get('Intercompany Variance', {})
+    if ic_var.get('pending', 0) == 0:
+        progress_tracker.update_milestone('intercompany_reconciliation', True)
+    
+    # Update accruals
+    accrual_var = approval_summary.get('by_type', {}).get('Accrual Variance', {})
+    if accrual_var.get('pending', 0) == 0:
+        progress_tracker.update_milestone('accruals_prepayments', True)
+    
+    # Update bank reconciliation
+    bank_rec = approval_summary.get('by_type', {}).get('Bank Reconciliation', {})
+    if bank_rec.get('pending', 0) == 0:
+        progress_tracker.update_milestone('bank_reconciliation', True)
+    
+    # Update budget variance
+    budget_var = approval_summary.get('by_type', {}).get('Budget Variance', {})
+    if budget_var.get('pending', 0) == 0:
+        progress_tracker.update_milestone('budget_variance_review', True)
+    
+    # Update final trial balance when all approvals processed
+    if approval_summary.get('pending', 0) == 0:
+        progress_tracker.update_milestone('final_trial_balance', True)
+
+
+# Call this periodically or when approvals are processed
+def update_progress_after_approval():
+    """Call this after any approval decision to update progress"""
+    update_milestones_from_approvals("2026-03")
+    logger.info("📊 Updated close progress milestones based on current state")
+
 
 # ============================================================================
 # STARTUP EVENT
