@@ -330,6 +330,9 @@ class ProactiveWebSocketManager:
     async def broadcast_progress(self, scan_id: str, progress_update: ProgressUpdate):
         if scan_id in self.scan_subscriptions:
             message = progress_update.model_dump()
+            # Convert datetime to string for JSON serialization
+            if isinstance(message.get('last_updated'), datetime):
+                message['last_updated'] = message['last_updated'].isoformat()
             for connection in self.scan_subscriptions[scan_id]:
                 try:
                     await connection.send_json(message)
@@ -9364,14 +9367,17 @@ async def update_proactive_issue_status(
 
 @app.websocket("/ws/proactive/{scan_id}")
 async def websocket_proactive(websocket: WebSocket, scan_id: str):
-    """WebSocket connection for real-time progress updates"""
     await proactive_engine.ws_manager.connect(websocket)
     await proactive_engine.ws_manager.subscribe(websocket, scan_id)
     
     # Send initial progress
     progress = proactive_engine.get_progress_update(scan_id)
     if progress:
-        await websocket.send_json(progress.model_dump())
+        # Convert datetime to string for JSON serialization
+        progress_dict = progress.model_dump()
+        if isinstance(progress_dict.get('last_updated'), datetime):
+            progress_dict['last_updated'] = progress_dict['last_updated'].isoformat()
+        await websocket.send_json(progress_dict)
     
     try:
         while True:
@@ -9383,7 +9389,10 @@ async def websocket_proactive(websocket: WebSocket, scan_id: str):
                 proactive_engine.update_issue_status(scan_id, issue_id, ProactiveIssueStatus.RESOLVED, "WebSocket")
                 progress = proactive_engine.get_progress_update(scan_id)
                 if progress:
-                    await websocket.send_json({"type": "progress", "data": progress.model_dump()})
+                    progress_dict = progress.model_dump()
+                    if isinstance(progress_dict.get('last_updated'), datetime):
+                        progress_dict['last_updated'] = progress_dict['last_updated'].isoformat()
+                    await websocket.send_json({"type": "progress", "data": progress_dict})
     except WebSocketDisconnect:
         proactive_engine.ws_manager.disconnect(websocket)
 
