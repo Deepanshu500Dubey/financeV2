@@ -9124,94 +9124,86 @@ async def get_close_progress_api(fiscal_period: str = Query("2026-03")):
 # ============================================================================
 # Helper function to update milestones based on approval completion
 # ============================================================================
-
 def update_milestones_from_approvals(fiscal_period: str = "2026-03"):
     """
-    Automatically update milestone completion based on approval status
+    CORRECTED: Update milestone progress based on approval registry data.
+    
+    Rules:
+    1. Milestone is COMPLETED ONLY IF: total_items > 0 AND pending_items == 0
+    2. If total_items == 0: milestone is NOT_STARTED (progress = 0)
+    3. If pending_items == total_items: milestone is NOT_STARTED (progress = 0)
+    4. If pending_items > 0: milestone is IN_PROGRESS (partial progress)
     """
     approval_summary = approval_registry.get_approval_summary(fiscal_period)
+    by_type = approval_summary.get('by_type', {})
     
-    # Data Validation - Complete when NO blocking exceptions exist
-    # Check if there are any critical blocking approvals still pending
-    blocking_types = ['Missing Cost Center', 'AR Variance Correction', 'Invalid Account Codes']
-    blocking_pending = 0
-    for btype in blocking_types:
-        blocking_pending += approval_summary.get('by_type', {}).get(btype, {}).get('pending', 0)
-    
-    if blocking_pending == 0 and approval_summary.get('total_generated', 0) > 0:
-        progress_tracker.update_milestone('data_validation', True)
-    elif blocking_pending > 0:
-        progress_tracker.update_milestone('data_validation', False)
-    
-    # Cost Center Assignment - Complete when ALL missing cost center approvals are processed
-    missing_cc = approval_summary.get('by_type', {}).get('Missing Cost Center', {})
-    if missing_cc.get('total', 0) > 0:
-        # Only complete if no pending and some were processed
-        if missing_cc.get('pending', 0) == 0:
-            progress_tracker.update_milestone('cost_center_assignment', True)
+    # Process each milestone using its mapped approval types
+    for milestone_key, milestone in progress_tracker.milestones.items():
+        approval_types = milestone.get('approval_types', [])
+        
+        if not approval_types:
+            # Special milestones without mapped approval types
+            if milestone_key == 'data_validation':
+                # Data validation: Check if any data analysis has been performed
+                total_generated = approval_summary.get('total_generated', 0)
+                if total_generated == 0:
+                    # No analysis performed yet
+                    progress_tracker.update_milestone_progress(milestone_key, total_items=0, pending_items=0)
+                else:
+                    # Data has been analyzed (approvals generated), check if blocking issues exist
+                    blocking_types = ['Missing Cost Center', 'AR Variance Correction']
+                    total_blocking = 0
+                    pending_blocking = 0
+                    for bt in blocking_types:
+                        type_data = by_type.get(bt, {})
+                        total_blocking += type_data.get('total', 0)
+                        pending_blocking += type_data.get('pending', 0)
+                    
+                    if total_blocking == 0:
+                        # No blocking issues found at all - validation passed
+                        progress_tracker.update_milestone_progress(
+                            milestone_key, 
+                            total_items=total_generated,
+                            pending_items=0
+                        )
+                    else:
+                        # Use blocking items as the measure
+                        progress_tracker.update_milestone_progress(
+                            milestone_key,
+                            total_items=total_blocking,
+                            pending_items=pending_blocking
+                        )
+            
+            elif milestone_key == 'final_trial_balance':
+                # Final TB: Complete only when ALL approvals are processed
+                total_all = approval_summary.get('total_generated', 0)
+                pending_all = approval_summary.get('pending', 0)
+                progress_tracker.update_milestone_progress(milestone_key, total_items=total_all, pending_items=pending_all)
+        
         else:
-            progress_tracker.update_milestone('cost_center_assignment', False)
+            # Milestones with mapped approval types
+            total_items = 0
+            pending_items = 0
+            
+            for atype in approval_types:
+                type_data = by_type.get(atype, {})
+                total_items += type_data.get('total', 0)
+                pending_items += type_data.get('pending', 0)
+            
+            # Update milestone progress with correct totals
+            progress_tracker.update_milestone_progress(milestone_key, total_items, pending_items)
     
-    # AR Reconciliation - Complete when AR variance is resolved
-    ar_var = approval_summary.get('by_type', {}).get('AR Variance Correction', {})
-    if ar_var.get('total', 0) > 0:
-        if ar_var.get('pending', 0) == 0:
-            progress_tracker.update_milestone('ar_reconciliation', True)
-        else:
-            progress_tracker.update_milestone('ar_reconciliation', False)
-    elif approval_summary.get('total_generated', 0) == 0:
-        # No AR issues, mark as complete
-        progress_tracker.update_milestone('ar_reconciliation', True)
-    
-    # Intercompany Reconciliation - Complete when all intercompany variances resolved
-    ic_var = approval_summary.get('by_type', {}).get('Intercompany Variance', {})
-    if ic_var.get('total', 0) > 0:
-        if ic_var.get('pending', 0) == 0:
-            progress_tracker.update_milestone('intercompany_reconciliation', True)
-        else:
-            progress_tracker.update_milestone('intercompany_reconciliation', False)
-    else:
-        # No intercompany issues, mark as complete
-        progress_tracker.update_milestone('intercompany_reconciliation', True)
-    
-    # Accruals & Prepayments - Complete when all accrual variances resolved
-    accrual_var = approval_summary.get('by_type', {}).get('Accrual Variance', {})
-    if accrual_var.get('total', 0) > 0:
-        if accrual_var.get('pending', 0) == 0:
-            progress_tracker.update_milestone('accruals_prepayments', True)
-        else:
-            progress_tracker.update_milestone('accruals_prepayments', False)
-    else:
-        # No accrual issues, mark as complete
-        progress_tracker.update_milestone('accruals_prepayments', True)
-    
-    # Bank Reconciliation - Complete when all bank reconciliation items resolved
-    bank_rec = approval_summary.get('by_type', {}).get('Bank Reconciliation', {})
-    if bank_rec.get('total', 0) > 0:
-        if bank_rec.get('pending', 0) == 0:
-            progress_tracker.update_milestone('bank_reconciliation', True)
-        else:
-            progress_tracker.update_milestone('bank_reconciliation', False)
-    else:
-        # No bank issues, mark as complete
-        progress_tracker.update_milestone('bank_reconciliation', True)
-    
-    # Budget Variance Review - Complete when all budget variances reviewed
-    budget_var = approval_summary.get('by_type', {}).get('Budget Variance', {})
-    if budget_var.get('total', 0) > 0:
-        if budget_var.get('pending', 0) == 0:
-            progress_tracker.update_milestone('budget_variance_review', True)
-        else:
-            progress_tracker.update_milestone('budget_variance_review', False)
-    else:
-        # No budget variances, mark as complete
-        progress_tracker.update_milestone('budget_variance_review', True)
-    
-    # Final Trial Balance - Complete when ALL approvals processed
-    if approval_summary.get('pending', 0) == 0 and approval_summary.get('total_generated', 0) > 0:
-        progress_tracker.update_milestone('final_trial_balance', True)
-    elif approval_summary.get('pending', 0) > 0:
-        progress_tracker.update_milestone('final_trial_balance', False)
+    # Log current state
+    overall = progress_tracker.calculate_overall_milestone_progress()
+    current = progress_tracker.get_current_stage()
+    logger.info(f"📊 Updated milestones: overall={overall:.1f}%, "
+                f"current_stage={current['stage_name']} ({current['status']}, {current['progress']:.0f}%)")
+
+
+def update_progress_from_approvals():
+    """Helper to update progress milestones after approvals"""
+    update_milestones_from_approvals("2026-03")
+
 
 
 # Call this periodically or when approvals are processed
