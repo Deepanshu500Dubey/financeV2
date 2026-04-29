@@ -93,6 +93,11 @@ class ExceptionType(str, Enum):
     OVERDUE_INVOICE = "Overdue Invoice"
     LARGE_OUTSTANDING = "Large Outstanding Balance"
 
+class MilestoneStatus(str, Enum):
+    NOT_STARTED = "NOT_STARTED"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+
 class ApprovalStatus(str, Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
@@ -657,41 +662,125 @@ def send_email_notification(
 # CLOSE PROGRESS DASHBOARD - TRACKS ALL DECISIONS AND PROGRESS
 # ============================================================================
 
+# ============================================================================
+# CLOSE PROGRESS TRACKER - REDESIGNED WITH PROPER STAGE TRACKING
+# ============================================================================
+
+class MilestoneStatus(str, Enum):
+    NOT_STARTED = "NOT_STARTED"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+
 class CloseProgressTracker:
-    """Tracks progress of month-end close across all activities"""
+    """Tracks progress of month-end close across all activities with proper state management"""
     
     def __init__(self):
         self.progress_file = 'close_progress.json'
+        
+        # Redesigned milestone structure with status and progress
         self.milestones = {
-            'data_validation': {'name': 'Data Validation', 'weight': 10, 'completed': False},
-            'cost_center_assignment': {'name': 'Cost Center Assignment', 'weight': 10, 'completed': False},
-            'ar_reconciliation': {'name': 'AR Reconciliation', 'weight': 15, 'completed': False},
-            'intercompany_reconciliation': {'name': 'Intercompany Reconciliation', 'weight': 20, 'completed': False},
-            'accruals_prepayments': {'name': 'Accruals & Prepayments', 'weight': 15, 'completed': False},
-            'bank_reconciliation': {'name': 'Bank Reconciliation', 'weight': 15, 'completed': False},
-            'budget_variance_review': {'name': 'Budget Variance Review', 'weight': 10, 'completed': False},
-            'final_trial_balance': {'name': 'Final Trial Balance', 'weight': 5, 'completed': False}
+            'data_validation': {
+                'name': 'Data Validation',
+                'weight': 10,
+                'status': MilestoneStatus.NOT_STARTED,
+                'progress': 0.0,
+                'approval_types': []  # No specific approval types - based on general data quality
+            },
+            'cost_center_assignment': {
+                'name': 'Cost Center Assignment',
+                'weight': 10,
+                'status': MilestoneStatus.NOT_STARTED,
+                'progress': 0.0,
+                'approval_types': ['Missing Cost Center']
+            },
+            'ar_reconciliation': {
+                'name': 'AR Reconciliation',
+                'weight': 15,
+                'status': MilestoneStatus.NOT_STARTED,
+                'progress': 0.0,
+                'approval_types': ['AR Variance Correction', 'AR Missing Cost Centers']
+            },
+            'intercompany_reconciliation': {
+                'name': 'Intercompany Reconciliation',
+                'weight': 20,
+                'status': MilestoneStatus.NOT_STARTED,
+                'progress': 0.0,
+                'approval_types': ['Intercompany Variance']
+            },
+            'accruals_prepayments': {
+                'name': 'Accruals & Prepayments',
+                'weight': 15,
+                'status': MilestoneStatus.NOT_STARTED,
+                'progress': 0.0,
+                'approval_types': ['Accrual Variance']
+            },
+            'bank_reconciliation': {
+                'name': 'Bank Reconciliation',
+                'weight': 15,
+                'status': MilestoneStatus.NOT_STARTED,
+                'progress': 0.0,
+                'approval_types': ['Bank Reconciliation']
+            },
+            'budget_variance_review': {
+                'name': 'Budget Variance Review',
+                'weight': 10,
+                'status': MilestoneStatus.NOT_STARTED,
+                'progress': 0.0,
+                'approval_types': ['Budget Variance']
+            },
+            'final_trial_balance': {
+                'name': 'Final Trial Balance',
+                'weight': 5,
+                'status': MilestoneStatus.NOT_STARTED,
+                'progress': 0.0,
+                'approval_types': []  # All approvals must be complete
+            }
         }
         self._load_progress()
     
     def _load_progress(self):
-        """Load saved progress from file"""
+        """Load saved progress from file with backward compatibility"""
         if os.path.exists(self.progress_file):
             try:
                 with open(self.progress_file, 'r') as f:
                     data = json.load(f)
-                    for key, value in data.get('milestones', {}).items():
-                        if key in self.milestones:
-                            self.milestones[key]['completed'] = value.get('completed', False)
+                    
+                # Load milestone data with backward compatibility
+                for key, value in data.get('milestones', {}).items():
+                    if key in self.milestones:
+                        # Handle old format (completed: bool)
+                        if 'completed' in value and 'status' not in value:
+                            if value['completed']:
+                                self.milestones[key]['status'] = MilestoneStatus.COMPLETED
+                                self.milestones[key]['progress'] = 100.0
+                            else:
+                                self.milestones[key]['status'] = MilestoneStatus.NOT_STARTED
+                                self.milestones[key]['progress'] = 0.0
+                        else:
+                            # New format
+                            self.milestones[key]['status'] = MilestoneStatus(value.get('status', 'NOT_STARTED'))
+                            self.milestones[key]['progress'] = float(value.get('progress', 0.0))
+                
                 logger.info(f"📊 Loaded close progress from {self.progress_file}")
             except Exception as e:
                 logger.error(f"Error loading progress: {e}")
+                self.reset()
     
     def _save_progress(self):
         """Save progress to file"""
         try:
+            # Convert milestones to serializable format
+            milestones_data = {}
+            for key, milestone in self.milestones.items():
+                milestones_data[key] = {
+                    'name': milestone['name'],
+                    'weight': milestone['weight'],
+                    'status': milestone['status'].value,
+                    'progress': milestone['progress']
+                }
+            
             data = {
-                'milestones': self.milestones,
+                'milestones': milestones_data,
                 'last_updated': datetime.now().isoformat()
             }
             with open(self.progress_file, 'w') as f:
@@ -700,77 +789,198 @@ class CloseProgressTracker:
         except Exception as e:
             logger.error(f"Error saving progress: {e}")
     
-    def update_milestone(self, milestone_key: str, completed: bool):
-        """Update a milestone status"""
-        if milestone_key in self.milestones:
-            self.milestones[milestone_key]['completed'] = completed
-            self._save_progress()
-            logger.info(f"📊 Milestone '{milestone_key}' updated to {completed}")
+    def reset(self):
+        """Reset all milestones to NOT_STARTED state"""
+        for key in self.milestones:
+            self.milestones[key]['status'] = MilestoneStatus.NOT_STARTED
+            self.milestones[key]['progress'] = 0.0
+        self._save_progress()
+        logger.info("🔄 All milestones reset to NOT_STARTED")
     
-    def calculate_progress_percent(self) -> float:
-        """Calculate overall progress percentage based on completed milestones"""
+    def update_milestone_progress(self, milestone_key: str, total_items: int, pending_items: int):
+        """
+        Update milestone progress based on actual work items.
+        
+        CORRECT LOGIC:
+        - total_items == 0: NOT_STARTED, progress = 0
+        - pending_items == total_items: NOT_STARTED, progress = 0
+        - pending_items > 0: IN_PROGRESS, progress = ((total - pending) / total) * 100
+        - pending_items == 0 AND total_items > 0: COMPLETED, progress = 100
+        """
+        if milestone_key not in self.milestones:
+            logger.warning(f"Unknown milestone key: {milestone_key}")
+            return
+        
+        if total_items == 0 or pending_items == total_items:
+            # No work has been done or no items exist
+            self.milestones[milestone_key]['status'] = MilestoneStatus.NOT_STARTED
+            self.milestones[milestone_key]['progress'] = 0.0
+        elif pending_items > 0:
+            # Work in progress
+            self.milestones[milestone_key]['status'] = MilestoneStatus.IN_PROGRESS
+            self.milestones[milestone_key]['progress'] = ((total_items - pending_items) / total_items) * 100
+        else:
+            # All work completed (pending == 0 AND total > 0)
+            self.milestones[milestone_key]['status'] = MilestoneStatus.COMPLETED
+            self.milestones[milestone_key]['progress'] = 100.0
+        
+        self._save_progress()
+        logger.info(f"📊 Milestone '{milestone_key}': status={self.milestones[milestone_key]['status'].value}, "
+                   f"progress={self.milestones[milestone_key]['progress']:.1f}%")
+    
+    def calculate_overall_milestone_progress(self) -> float:
+        """
+        Calculate overall progress using WEIGHTED PARTIAL PROGRESS.
+        
+        Formula: sum(weight * (milestone.progress / 100)) / total_weight * 100
+        """
         total_weight = sum(m['weight'] for m in self.milestones.values())
-        completed_weight = sum(m['weight'] for m in self.milestones.values() if m['completed'])
-        return (completed_weight / total_weight * 100) if total_weight > 0 else 0
+        
+        if total_weight == 0:
+            return 0.0
+        
+        weighted_sum = sum(
+            m['weight'] * (m['progress'] / 100.0)
+            for m in self.milestones.values()
+        )
+        
+        return (weighted_sum / total_weight) * 100
+    
+    def get_current_stage(self) -> Dict[str, Any]:
+        """
+        Get the current active stage of the close process.
+        
+        Returns the FIRST milestone that is NOT completed.
+        If all are completed, returns a completed status.
+        """
+        for key, milestone in self.milestones.items():
+            if milestone['status'] != MilestoneStatus.COMPLETED:
+                return {
+                    'stage_key': key,
+                    'stage_name': milestone['name'],
+                    'status': milestone['status'].value,
+                    'progress': milestone['progress']
+                }
+        
+        # All milestones are completed
+        return {
+            'stage_key': 'complete',
+            'stage_name': 'Close Complete',
+            'status': 'COMPLETED',
+            'progress': 100.0
+        }
     
     def get_incomplete_milestones(self) -> List[Dict]:
-        """Get list of incomplete milestones"""
+        """Get list of incomplete milestones with their current status"""
         return [
-            {'key': key, 'name': data['name'], 'weight': data['weight']}
-            for key, data in self.milestones.items() if not data['completed']
+            {
+                'key': key,
+                'name': data['name'],
+                'weight': data['weight'],
+                'status': data['status'].value,
+                'progress': data['progress']
+            }
+            for key, data in self.milestones.items()
+            if data['status'] != MilestoneStatus.COMPLETED
         ]
-
+    
+    def get_milestone_summary(self) -> Dict[str, Any]:
+        """Get complete milestone summary for UI display"""
+        milestones_summary = {}
+        for key, milestone in self.milestones.items():
+            milestones_summary[key] = {
+                'name': milestone['name'],
+                'weight': milestone['weight'],
+                'status': milestone['status'].value,
+                'progress': milestone['progress'],
+                'approval_types': milestone['approval_types']
+            }
+        
+        return {
+            'milestones': milestones_summary,
+            'overall_progress': self.calculate_overall_milestone_progress(),
+            'current_stage': self.get_current_stage(),
+            'incomplete_count': len(self.get_incomplete_milestones()),
+            'last_updated': datetime.now().isoformat()
+        }
 
 # Initialize progress tracker
 progress_tracker = CloseProgressTracker()
 
 def update_milestones_from_approvals(fiscal_period: str = "2026-03"):
     """
-    Automatically update milestone completion based on approval status
+    CORRECTED: Update milestone progress based on approval registry data.
+    
+    Rules:
+    1. Milestone is COMPLETED ONLY IF: total_items > 0 AND pending_items == 0
+    2. If total_items == 0: milestone is NOT_STARTED
+    3. If pending_items > 0: milestone is IN_PROGRESS
     """
     approval_summary = approval_registry.get_approval_summary(fiscal_period)
+    by_type = approval_summary.get('by_type', {})
     
-    # Update data validation milestone
-    if approval_summary.get('total_generated', 0) > 0:
-        progress_tracker.update_milestone('data_validation', True)
+    # Process each milestone using its mapped approval types
+    for milestone_key, milestone in progress_tracker.milestones.items():
+        approval_types = milestone.get('approval_types', [])
+        
+        if not approval_types:
+            # Special milestones without mapped approval types
+            if milestone_key == 'data_validation':
+                # Data validation: Check if any data analysis has been performed
+                # This is completed if we have generated any approvals from initial analysis
+                total_generated = approval_summary.get('total_generated', 0)
+                if total_generated > 0:
+                    # Data has been analyzed (approvals generated), check if blocking issues exist
+                    blocking_types = ['Missing Cost Center', 'AR Variance Correction', 'Invalid Account Codes']
+                    blocking_pending = sum(
+                        by_type.get(bt, {}).get('pending', 0)
+                        for bt in blocking_types
+                    )
+                    if blocking_pending == 0:
+                        progress_tracker.update_milestone_progress(
+                            milestone_key, 
+                            total_items=total_generated,
+                            pending_items=0
+                        )
+                    else:
+                        # Some blocking items still pending
+                        total_relevant = sum(
+                            by_type.get(bt, {}).get('total', 0)
+                            for bt in blocking_types
+                        )
+                        progress_tracker.update_milestone_progress(
+                            milestone_key,
+                            total_items=total_relevant if total_relevant > 0 else total_generated,
+                            pending_items=blocking_pending
+                        )
+                else:
+                    # No analysis performed yet
+                    progress_tracker.update_milestone_progress(milestone_key, total_items=0, pending_items=0)
+            
+            elif milestone_key == 'final_trial_balance':
+                # Final TB: Complete only when ALL approvals are processed
+                total_all = approval_summary.get('total_generated', 0)
+                pending_all = approval_summary.get('pending', 0)
+                progress_tracker.update_milestone_progress(milestone_key, total_items=total_all, pending_items=pending_all)
+        
+        else:
+            # Milestones with mapped approval types
+            total_items = 0
+            pending_items = 0
+            
+            for atype in approval_types:
+                type_data = by_type.get(atype, {})
+                total_items += type_data.get('total', 0)
+                pending_items += type_data.get('pending', 0)
+            
+            # Update milestone progress with correct totals
+            progress_tracker.update_milestone_progress(milestone_key, total_items, pending_items)
     
-    # Update cost center assignment based on missing cost center approvals
-    missing_cc = approval_summary.get('by_type', {}).get('Missing Cost Center', {})
-    if missing_cc.get('pending', 0) == 0 and missing_cc.get('total', 0) > 0:
-        progress_tracker.update_milestone('cost_center_assignment', True)
-    
-    # Update AR reconciliation based on AR variance approvals
-    ar_var = approval_summary.get('by_type', {}).get('AR Variance Correction', {})
-    if ar_var.get('pending', 0) == 0:
-        progress_tracker.update_milestone('ar_reconciliation', True)
-    
-    # Update intercompany reconciliation
-    ic_var = approval_summary.get('by_type', {}).get('Intercompany Variance', {})
-    if ic_var.get('pending', 0) == 0:
-        progress_tracker.update_milestone('intercompany_reconciliation', True)
-    
-    # Update accruals
-    accrual_var = approval_summary.get('by_type', {}).get('Accrual Variance', {})
-    if accrual_var.get('pending', 0) == 0:
-        progress_tracker.update_milestone('accruals_prepayments', True)
-    
-    # Update bank reconciliation
-    bank_rec = approval_summary.get('by_type', {}).get('Bank Reconciliation', {})
-    if bank_rec.get('pending', 0) == 0:
-        progress_tracker.update_milestone('bank_reconciliation', True)
-    
-    # Update budget variance
-    budget_var = approval_summary.get('by_type', {}).get('Budget Variance', {})
-    if budget_var.get('pending', 0) == 0:
-        progress_tracker.update_milestone('budget_variance_review', True)
-    
-    # Update final trial balance when all approvals processed
-    if approval_summary.get('pending', 0) == 0:
-        progress_tracker.update_milestone('final_trial_balance', True)
+    # Log current state
+    overall = progress_tracker.calculate_overall_milestone_progress()
+    current = progress_tracker.get_current_stage()
+    logger.info(f"📊 Updated milestones: overall={overall:.1f}%, current_stage={current['stage_name']} ({current['status']})")
 
-# ============================================================================
-# THEN ADD THIS HELPER (if you want a simpler function name)
-# ============================================================================
 
 def update_progress_from_approvals():
     """Helper to update progress milestones after approvals"""
@@ -779,7 +989,9 @@ def update_progress_from_approvals():
 
 def analyze_close_readiness(fiscal_period: str = "2026-03") -> Dict[str, Any]:
     """
-    Comprehensive analysis of close readiness based on current state
+    CORRECTED: Comprehensive analysis of close readiness based on current state.
+    
+    FIX: Approval progress returns None/0 when no work has started.
     """
     # Get approval summary from registry
     approval_summary = approval_registry.get_approval_summary(fiscal_period)
@@ -822,7 +1034,7 @@ def analyze_close_readiness(fiscal_period: str = "2026-03") -> Dict[str, Any]:
             try:
                 created_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
                 days_pending = (now - created_date).days
-                if days_pending > 2:  # Overdue if > 2 days
+                if days_pending > 2:
                     overdue_items.append({
                         **item,
                         'days_pending': days_pending
@@ -831,18 +1043,14 @@ def analyze_close_readiness(fiscal_period: str = "2026-03") -> Dict[str, Any]:
                 pass
     
     # Identify blockers
-    blockers = []
-    
-    # Check for pending approvals by type
     pending_by_type = {}
     for item in pending_items:
         item_type = item['type']
         pending_by_type[item_type] = pending_by_type.get(item_type, 0) + 1
     
-    # Critical blockers (must be resolved to close)
+    # Critical blockers
     critical_blockers = []
     
-    # AR/GL variance is critical
     if pending_by_type.get('AR Variance Correction', 0) > 0:
         critical_blockers.append({
             'type': 'AR/GL Variance',
@@ -851,7 +1059,6 @@ def analyze_close_readiness(fiscal_period: str = "2026-03") -> Dict[str, Any]:
             'action': 'Approve variance correction journal entry'
         })
     
-    # Missing cost centers (if unassigned)
     if pending_by_type.get('Missing Cost Center', 0) > 0:
         critical_blockers.append({
             'type': 'Missing Cost Centers',
@@ -860,7 +1067,6 @@ def analyze_close_readiness(fiscal_period: str = "2026-03") -> Dict[str, Any]:
             'action': 'Assign cost centers to transactions'
         })
     
-    # Intercompany variances
     if pending_by_type.get('Intercompany Variance', 0) > 0:
         critical_blockers.append({
             'type': 'Intercompany Variance',
@@ -869,9 +1075,10 @@ def analyze_close_readiness(fiscal_period: str = "2026-03") -> Dict[str, Any]:
             'action': 'Review and approve intercompany elimination journals'
         })
     
-    # High severity material variances
+    blockers = []
+    
     if pending_by_type.get('Accrual Variance', 0) > 0:
-        critical_blockers.append({
+        blockers.append({
             'type': 'Accrual Variance',
             'severity': 'MEDIUM',
             'count': pending_by_type['Accrual Variance'],
@@ -901,20 +1108,38 @@ def analyze_close_readiness(fiscal_period: str = "2026-03") -> Dict[str, Any]:
     elif pending_items:
         overall_status = 'AT_RISK'
         status_message = f"⚠️ AT RISK - {len(pending_items)} items pending approval"
-    elif not pending_items and not critical_blockers:
+    elif not pending_items and len(approval_registry.generated_approvals) > 0:
         overall_status = 'READY'
         status_message = f"✅ READY - All approvals processed, ready to close"
     else:
-        overall_status = 'IN_PROGRESS'
-        status_message = f"🔄 IN PROGRESS - {len(pending_items)} items under review"
+        overall_status = 'NOT_STARTED'
+        status_message = f"🔵 NOT STARTED - No approvals generated yet"
     
-    # Calculate progress
+    # =========================================================================
+    # CORRECTED APPROVAL PROGRESS CALCULATION
+    # =========================================================================
     total_approvals = len(approval_registry.generated_approvals)
     processed_approvals = len(approved_items) + len(rejected_items)
-    progress_percent = (processed_approvals / total_approvals * 100) if total_approvals > 0 else 100
     
-    # Get milestone progress
-    milestone_progress = progress_tracker.calculate_progress_percent()
+    if total_approvals > 0:
+        # Real work exists - calculate actual progress
+        approval_progress_percent = (processed_approvals / total_approvals) * 100
+        approval_progress_status = f"{processed_approvals} of {total_approvals} resolved"
+    else:
+        # No work has started - progress is 0, not 100
+        approval_progress_percent = 0.0
+        approval_progress_status = "No approvals generated yet"
+    
+    # =========================================================================
+    # CORRECTED MILESTONE PROGRESS
+    # =========================================================================
+    # Update milestones from approval data (uses corrected logic)
+    update_milestones_from_approvals(fiscal_period)
+    
+    # Get milestone progress and current stage
+    milestone_progress_percent = progress_tracker.calculate_overall_milestone_progress()
+    current_stage = progress_tracker.get_current_stage()
+    milestone_summary = progress_tracker.get_milestone_summary()
     
     return {
         'fiscal_period': fiscal_period,
@@ -926,11 +1151,13 @@ def analyze_close_readiness(fiscal_period: str = "2026-03") -> Dict[str, Any]:
             'pending': len(pending_items),
             'assigned': len(assigned_items),
             'overdue': len(overdue_items),
-            'progress_percent': progress_percent,
-            'milestone_progress_percent': milestone_progress
+            'approval_progress_percent': approval_progress_percent,
+            'approval_progress_status': approval_progress_status,
+            'milestone_progress_percent': milestone_progress_percent,
         },
         'overall_status': overall_status,
         'status_message': status_message,
+        'current_stage': current_stage,
         'critical_blockers': critical_blockers,
         'other_blockers': blockers,
         'pending_items': pending_items,
@@ -938,30 +1165,54 @@ def analyze_close_readiness(fiscal_period: str = "2026-03") -> Dict[str, Any]:
         'approved_items': approved_items,
         'assigned_items': assigned_items,
         'pending_by_type': pending_by_type,
-        'incomplete_milestones': progress_tracker.get_incomplete_milestones()
+        'incomplete_milestones': progress_tracker.get_incomplete_milestones(),
+        'milestone_summary': milestone_summary
     }
 
 
 def generate_cfo_summary(analysis: Dict[str, Any]) -> str:
     """
-    Generate a plain English summary for CFO
+    CORRECTED: Generate a plain English summary for CFO with proper progress indicators
     """
     fiscal_period = analysis['fiscal_period']
     summary = analysis['summary']
     status = analysis['overall_status']
     blockers = analysis['critical_blockers'] + analysis['other_blockers']
     pending_by_type = analysis['pending_by_type']
+    current_stage = analysis['current_stage']
     
     # Format period
     period_parts = fiscal_period.split('-')
-    period_str = f"{datetime(int(period_parts[0]), int(period_parts[1]), 1).strftime('%B %Y')}"
+    try:
+        period_str = f"{datetime(int(period_parts[0]), int(period_parts[1]), 1).strftime('%B %Y')}"
+    except Exception:
+        period_str = fiscal_period
     
     # Build the summary
     lines = []
     
-    # Opening line with progress
-    progress = summary['progress_percent']
-    lines.append(f"📊 **{period_str} Close Progress: {progress:.0f}% complete**")
+    # Opening line with current stage
+    if current_stage['status'] == 'COMPLETED':
+        lines.append(f"📊 **{period_str} Close: All Stages Complete**")
+    elif current_stage['status'] == 'NOT_STARTED':
+        lines.append(f"📊 **{period_str} Close: Not Yet Started**")
+    else:
+        stage_name = current_stage.get('stage_name', 'Unknown')
+        stage_progress = current_stage.get('progress', 0)
+        lines.append(f"📊 **{period_str} Close: Currently at '{stage_name}' ({stage_progress:.0f}%)**")
+    
+    # Approval progress line
+    approval_progress = summary.get('approval_progress_percent', 0)
+    approval_status = summary.get('approval_progress_status', '')
+    
+    if summary.get('total_approvals_generated', 0) > 0:
+        lines.append(f"📋 **Approval Progress:** {approval_progress:.0f}% ({approval_status})")
+    else:
+        lines.append(f"📋 **Approval Progress:** No approvals required yet")
+    
+    # Milestone progress
+    milestone_progress = summary.get('milestone_progress_percent', 0)
+    lines.append(f"🎯 **Milestone Progress:** {milestone_progress:.1f}%")
     
     # Status line
     if status == 'BLOCKED':
@@ -970,8 +1221,16 @@ def generate_cfo_summary(analysis: Dict[str, Any]) -> str:
         lines.append(f"⚠️ **Status: At Risk** - Close can proceed but requires immediate attention on pending items.")
     elif status == 'READY':
         lines.append(f"✅ **Status: Ready to Close** - All approvals processed. Final validation can proceed.")
+    elif status == 'NOT_STARTED':
+        lines.append(f"🔵 **Status: Not Started** - Run initial data assessment to begin the close process.")
     else:
         lines.append(f"🔄 **Status: In Progress** - Work is ongoing.")
+    
+    # Current stage details
+    if current_stage['status'] != 'COMPLETED':
+        lines.append(f"\n**📍 Current Stage:** {current_stage['stage_name']}")
+        lines.append(f"   • Status: {current_stage['status']}")
+        lines.append(f"   • Progress: {current_stage['progress']:.1f}%")
     
     # Blockers section
     if blockers:
@@ -991,10 +1250,14 @@ def generate_cfo_summary(analysis: Dict[str, Any]) -> str:
         lines.append(f"\n**⚠️ Overdue Items ({summary['overdue']}):**")
         lines.append(f"  {summary['overdue']} items have been pending for more than 2 days.")
     
-    # Recommended actions
+    # Recommended actions based on current stage
     lines.append(f"\n**🎯 Recommended Path to Close:**")
     
-    if status == 'BLOCKED':
+    if status == 'NOT_STARTED':
+        lines.append(f"  1. **Start:** Run initial data assessment")
+        lines.append(f"  2. **Analyze:** Generate trial balance to detect exceptions")
+        lines.append(f"  3. **Process:** Review and approve detected exceptions")
+    elif status == 'BLOCKED':
         lines.append(f"  1. **Immediate:** Address {len(analysis['critical_blockers'])} critical blockers")
         for i, blocker in enumerate(analysis['critical_blockers'][:3], 1):
             lines.append(f"     - {blocker['action']}")
@@ -1014,6 +1277,14 @@ def generate_cfo_summary(analysis: Dict[str, Any]) -> str:
     # Completed items
     if summary['approved'] > 0:
         lines.append(f"\n**✅ Completed Items:** {summary['approved']} approvals processed successfully.")
+    
+    # Milestone breakdown
+    incomplete = analysis.get('incomplete_milestones', [])
+    if incomplete:
+        lines.append(f"\n**📋 Remaining Milestones ({len(incomplete)}):**")
+        for m in incomplete[:5]:
+            status_icon = "🔄" if m['status'] == 'IN_PROGRESS' else "○"
+            lines.append(f"  {status_icon} {m['name']}: {m['progress']:.0f}% ({m['status']})")
     
     return "\n".join(lines)
 # ============================================================================
@@ -7735,6 +8006,43 @@ async def get_close_status(fiscal_period: str = Query("2026-03")):
         raise HTTPException(status_code=500, detail=str(e))
     
 
+
+def _render_milestones_with_progress_html(milestones: Dict[str, Any]) -> str:
+    """
+    Render milestones with individual progress bars and status indicators.
+    Uses the new milestone structure with status and progress fields.
+    """
+    if not milestones:
+        return '<p style="color: #666; text-align: center;">No milestones defined</p>'
+    
+    html = ''
+    
+    for key, milestone in milestones.items():
+        status = milestone.get('status', 'NOT_STARTED')
+        progress = milestone.get('progress', 0)
+        name = milestone.get('name', key)
+        weight = milestone.get('weight', 0)
+        
+        status_class = 'completed' if status == 'COMPLETED' else 'in-progress' if status == 'IN_PROGRESS' else 'not-started'
+        status_icon = '✅' if status == 'COMPLETED' else '🔄' if status == 'IN_PROGRESS' else '○'
+        
+        html += f'''
+            <div class="milestone-item">
+                <div class="milestone-header">
+                    <span class="milestone-icon {status_class}">{status_icon}</span>
+                    <span class="milestone-name">{name}</span>
+                    <span class="milestone-weight">({weight}%)</span>
+                </div>
+                <div class="milestone-progress-container">
+                    <div class="milestone-progress-bar {status_class}" style="width: {progress:.0f}%"></div>
+                </div>
+                <div class="milestone-percent">{progress:.0f}% - {status.replace('_', ' ')}</div>
+            </div>
+        '''
+    
+    return html
+    
+
 @app.get("/dashboard/progress", response_class=HTMLResponse)
 async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
     """
@@ -7752,28 +8060,56 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
     except Exception as e:
         logger.warning(f"Could not load logo: {e}")
     
-    # Format numbers for display
-    progress = analysis['summary']['progress_percent']
+    # Format numbers for display - USE CORRECTED KEY NAMES
+    approval_progress = analysis['summary']['approval_progress_percent']
     milestone_progress = analysis['summary']['milestone_progress_percent']
+    overall_status = analysis['overall_status']
     
-    # Determine progress bar color
-    if progress >= 90:
-        progress_color = "#000000"
-    elif progress >= 70:
-        progress_color = "#333333"
-    elif progress >= 50:
-        progress_color = "#666666"
-    else:
+    # Determine progress bar color and status color based on overall status
+    if overall_status == 'NOT_STARTED':
         progress_color = "#999999"
+        status_color = "#6c757d"  # Grey for not started
+    elif overall_status == 'BLOCKED':
+        progress_color = "#999999"
+        status_color = "#dc3545"  # Red for blocked
+    elif overall_status == 'AT_RISK':
+        progress_color = "#666666"
+        status_color = "#fd7e14"  # Orange for at risk
+    elif overall_status == 'READY':
+        progress_color = "#000000"
+        status_color = "#28a745"  # Green for ready
+    else:  # IN_PROGRESS or other
+        progress_color = "#333333"
+        status_color = "#007bff"  # Blue for in progress
     
-    # Status color
-    status_colors = {
-        'BLOCKED': '#dc3545',
-        'AT_RISK': '#fd7e14',
-        'READY': '#28a745',
-        'IN_PROGRESS': '#007bff'
-    }
-    status_color = status_colors.get(analysis['overall_status'], '#666666')
+    # Get current stage from analysis
+    current_stage = analysis.get('current_stage', {})
+    current_stage_name = current_stage.get('stage_name', 'Not Started')
+    current_stage_status = current_stage.get('status', 'NOT_STARTED')
+    current_stage_progress = current_stage.get('progress', 0)
+    
+    # Determine current stage status CSS class
+    if current_stage_status == 'COMPLETED':
+        stage_status_css = 'stage-status-completed'
+    elif current_stage_status == 'IN_PROGRESS':
+        stage_status_css = 'stage-status-in-progress'
+    else:
+        stage_status_css = 'stage-status-not-started'
+    
+    # Determine current stage icon
+    if current_stage_status == 'COMPLETED':
+        stage_icon = '✅'
+    elif current_stage_status == 'IN_PROGRESS':
+        stage_icon = '🔄'
+    else:
+        stage_icon = '🔵'
+    
+    # Get milestone data for initial render
+    milestone_summary = analysis.get('milestone_summary', {})
+    milestones = milestone_summary.get('milestones', {})
+    
+    # Generate initial milestone HTML
+    milestone_html = _render_milestones_with_progress_html(milestones)
     
     html_content = f"""
     <!DOCTYPE html>
@@ -7853,7 +8189,6 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
                 background: #555;
             }}
             
-            /* Refresh button */
             .refresh-btn {{
                 background: #333;
                 color: white;
@@ -7867,6 +8202,90 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
             
             .refresh-btn:hover {{
                 background: #555;
+            }}
+            
+            /* Current Stage Indicator */
+            .stage-indicator-container {{
+                background: white;
+                border-radius: 15px;
+                padding: 20px 25px;
+                margin-bottom: 25px;
+                box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+                display: flex;
+                align-items: center;
+                gap: 20px;
+                border-left: 6px solid {status_color};
+            }}
+            
+            .stage-indicator-icon {{
+                font-size: 2.5em;
+                min-width: 60px;
+                text-align: center;
+            }}
+            
+            .stage-indicator-content {{
+                flex-grow: 1;
+            }}
+            
+            .stage-indicator-label {{
+                font-size: 0.85em;
+                color: #666;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                margin-bottom: 5px;
+            }}
+            
+            .stage-indicator-name {{
+                font-size: 1.4em;
+                font-weight: bold;
+                color: #000000;
+            }}
+            
+            .stage-indicator-status {{
+                display: inline-block;
+                padding: 4px 12px;
+                border-radius: 20px;
+                font-size: 0.85em;
+                font-weight: 500;
+                margin-top: 5px;
+            }}
+            
+            .stage-status-completed {{
+                background: #000000;
+                color: white;
+            }}
+            
+            .stage-status-in-progress {{
+                background: #333333;
+                color: white;
+            }}
+            
+            .stage-status-not-started {{
+                background: #e0e0e0;
+                color: #666;
+            }}
+            
+            .stage-progress-bar {{
+                width: 150px;
+                background: #e0e0e0;
+                border-radius: 10px;
+                height: 8px;
+                overflow: hidden;
+            }}
+            
+            .stage-progress-fill {{
+                background: {status_color};
+                height: 100%;
+                border-radius: 10px;
+                transition: width 0.5s ease;
+                width: {current_stage_progress:.0f}%;
+            }}
+            
+            .stage-progress-text {{
+                font-size: 0.85em;
+                color: #666;
+                min-width: 50px;
+                text-align: right;
             }}
             
             /* Status Cards */
@@ -7952,16 +8371,20 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
                 height: 12px;
             }}
             
-            .progress-bar-fill {{
+            .progress-bar-fill.approval {{
                 background: {progress_color};
                 height: 100%;
                 border-radius: 20px;
                 transition: width 0.5s ease;
-                width: {progress}%;
+                width: {approval_progress:.1f}%;
             }}
             
             .progress-bar-fill.milestone {{
                 background: #666666;
+                height: 100%;
+                border-radius: 20px;
+                transition: width 0.5s ease;
+                width: {milestone_progress:.1f}%;
             }}
             
             /* Two Column Layout */
@@ -8115,44 +8538,91 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
                 gap: 10px;
             }}
             
-            /* Milestones */
+            /* Milestone Items with Progress Bars */
             .milestone-item {{
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                padding: 12px;
+                padding: 15px 0;
                 border-bottom: 1px solid #f0f0f0;
             }}
             
-            .milestone-name {{
+            .milestone-item:last-child {{
+                border-bottom: none;
+            }}
+            
+            .milestone-header {{
                 display: flex;
                 align-items: center;
                 gap: 12px;
+                margin-bottom: 8px;
             }}
             
-            .milestone-status {{
-                width: 24px;
-                height: 24px;
+            .milestone-icon {{
+                width: 28px;
+                height: 28px;
                 border-radius: 50%;
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                font-size: 0.8em;
+                font-size: 0.85em;
+                flex-shrink: 0;
             }}
             
-            .milestone-status.completed {{
+            .milestone-icon.completed {{
                 background: #000000;
                 color: white;
             }}
             
-            .milestone-status.pending {{
+            .milestone-icon.in-progress {{
+                background: #333333;
+                color: white;
+            }}
+            
+            .milestone-icon.not-started {{
                 background: #e0e0e0;
                 color: #666;
+            }}
+            
+            .milestone-name {{
+                font-weight: 500;
+                color: #333;
+                flex-grow: 1;
             }}
             
             .milestone-weight {{
                 color: #666;
                 font-size: 0.8em;
+            }}
+            
+            .milestone-progress-container {{
+                background: #e0e0e0;
+                border-radius: 10px;
+                height: 8px;
+                overflow: hidden;
+                margin-left: 40px;
+            }}
+            
+            .milestone-progress-bar {{
+                height: 100%;
+                border-radius: 10px;
+                transition: width 0.5s ease;
+            }}
+            
+            .milestone-progress-bar.completed {{
+                background: #000000;
+            }}
+            
+            .milestone-progress-bar.in-progress {{
+                background: #666666;
+            }}
+            
+            .milestone-progress-bar.not-started {{
+                background: #cccccc;
+            }}
+            
+            .milestone-percent {{
+                font-size: 0.85em;
+                color: #666;
+                margin-left: 40px;
+                margin-top: 4px;
             }}
             
             /* Footer */
@@ -8170,6 +8640,10 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
                 margin: 0 10px;
             }}
             
+            .footer a:hover {{
+                text-decoration: underline;
+            }}
+            
             /* Responsive */
             @media (max-width: 768px) {{
                 .two-column {{
@@ -8180,9 +8654,13 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
                     flex-direction: column;
                     text-align: center;
                 }}
+                
+                .stage-indicator-container {{
+                    flex-direction: column;
+                    text-align: center;
+                }}
             }}
             
-            /* Auto-refresh indicator */
             .auto-refresh {{
                 font-size: 0.8em;
                 color: #888;
@@ -8210,34 +8688,50 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
                 </div>
             </div>
             
+            <!-- Current Stage Indicator -->
+            <div class="stage-indicator-container" id="current-stage-container">
+                <div class="stage-indicator-icon" id="stage-icon">{stage_icon}</div>
+                <div class="stage-indicator-content">
+                    <div class="stage-indicator-label">Current Stage</div>
+                    <div class="stage-indicator-name" id="stage-name">{current_stage_name}</div>
+                    <span class="stage-indicator-status {stage_status_css}" id="stage-status-badge">
+                        {current_stage_status.replace('_', ' ')}
+                    </span>
+                </div>
+                <div class="stage-progress-bar">
+                    <div class="stage-progress-fill" id="stage-progress-fill" style="width: {current_stage_progress:.0f}%"></div>
+                </div>
+                <div class="stage-progress-text" id="stage-progress-text">{current_stage_progress:.0f}%</div>
+            </div>
+            
             <!-- Status Cards -->
             <div class="status-grid">
                 <div class="status-card">
-                    <div class="number">{analysis['summary']['progress_percent']:.0f}%</div>
-                    <div class="label">Overall Progress</div>
+                    <div class="number" id="approval-progress-number">{approval_progress:.0f}%</div>
+                    <div class="label">Approval Progress</div>
                 </div>
                 <div class="status-card">
-                    <div class="number">{analysis['summary']['total_approvals_generated']}</div>
+                    <div class="number" id="milestone-progress-number">{milestone_progress:.0f}%</div>
+                    <div class="label">Milestone Progress</div>
+                </div>
+                <div class="status-card">
+                    <div class="number" id="total-items-number">{analysis['summary']['total_approvals_generated']}</div>
                     <div class="label">Total Items</div>
                 </div>
                 <div class="status-card">
-                    <div class="number">{analysis['summary']['approved']}</div>
+                    <div class="number" id="approved-number">{analysis['summary']['approved']}</div>
                     <div class="label">Approved</div>
                 </div>
                 <div class="status-card">
-                    <div class="number">{analysis['summary']['pending']}</div>
+                    <div class="number" id="pending-number">{analysis['summary']['pending']}</div>
                     <div class="label">Pending</div>
-                </div>
-                <div class="status-card">
-                    <div class="number">{analysis['summary']['overdue']}</div>
-                    <div class="label">Overdue</div>
                 </div>
             </div>
             
             <!-- Main Status Banner -->
             <div class="main-status">
                 <div class="status-banner">
-                    <h2>{analysis['overall_status']} - {analysis['status_message']}</h2>
+                    <h2 id="status-heading">{analysis['overall_status'].replace('_', ' ')} - {analysis['status_message']}</h2>
                     <p>Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                 </div>
                 
@@ -8245,19 +8739,19 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
                     <div class="progress-item">
                         <div class="progress-label">
                             <span>📋 Approval Progress</span>
-                            <span>{analysis['summary']['progress_percent']:.1f}%</span>
+                            <span id="approval-progress-label">{analysis['summary'].get('approval_progress_status', f"{approval_progress:.0f}%")}</span>
                         </div>
                         <div class="progress-bar-container">
-                            <div class="progress-bar-fill" style="width: {analysis['summary']['progress_percent']}%"></div>
+                            <div class="progress-bar-fill approval" id="approval-progress-bar" style="width: {approval_progress:.1f}%"></div>
                         </div>
                     </div>
                     <div class="progress-item">
                         <div class="progress-label">
                             <span>🎯 Milestone Progress</span>
-                            <span>{milestone_progress:.1f}%</span>
+                            <span id="milestone-progress-label">{milestone_progress:.1f}%</span>
                         </div>
                         <div class="progress-bar-container">
-                            <div class="progress-bar-fill milestone" style="width: {milestone_progress}%"></div>
+                            <div class="progress-bar-fill milestone" id="milestone-progress-bar" style="width: {milestone_progress:.1f}%"></div>
                         </div>
                     </div>
                 </div>
@@ -8278,9 +8772,9 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
                 <div class="card">
                     <div class="card-header">
                         <h3>🚫 Blockers & Critical Items</h3>
-                        <span class="badge">{len(analysis['critical_blockers'])} Critical</span>
+                        <span class="badge" id="critical-badge">{len(analysis['critical_blockers'])} Critical</span>
                     </div>
-                    <div class="card-content">
+                    <div class="card-content" id="blockers-content">
                         {_render_blockers_html(analysis['critical_blockers'], analysis['other_blockers'])}
                     </div>
                 </div>
@@ -8289,9 +8783,9 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
                 <div class="card">
                     <div class="card-header">
                         <h3>⏳ Pending Approvals</h3>
-                        <span class="badge">{analysis['summary']['pending']} Items</span>
+                        <span class="badge" id="pending-badge">{analysis['summary']['pending']} Items</span>
                     </div>
-                    <div class="card-content">
+                    <div class="card-content" id="pending-content">
                         {_render_pending_items_html(analysis['pending_items'], analysis['overdue_items'])}
                     </div>
                 </div>
@@ -8299,14 +8793,14 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
             
             <!-- Second Row -->
             <div class="two-column">
-                <!-- Milestones -->
+                <!-- Milestones with Progress Bars -->
                 <div class="card">
                     <div class="card-header">
                         <h3>🎯 Close Milestones</h3>
-                        <span class="badge">{len(analysis['incomplete_milestones'])} Remaining</span>
+                        <span class="badge" id="milestone-remaining-badge">{len(analysis['incomplete_milestones'])} Remaining</span>
                     </div>
-                    <div class="card-content">
-                        {_render_milestones_html(analysis['incomplete_milestones'])}
+                    <div class="card-content" id="milestone-list">
+                        {milestone_html}
                     </div>
                 </div>
                 
@@ -8316,7 +8810,7 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
                         <h3>📋 Recent Activity</h3>
                         <span class="badge">Audit Trail</span>
                     </div>
-                    <div class="card-content">
+                    <div class="card-content" id="audit-trail-content">
                         {_render_audit_trail_html(analysis['approved_items'], analysis['assigned_items'])}
                     </div>
                 </div>
@@ -8359,23 +8853,106 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
             }}
             
             function updateDashboardData(data) {{
-                // Update numbers
-                document.querySelectorAll('.status-card')[0].querySelector('.number').textContent = data.summary.progress_percent.toFixed(0) + '%';
-                document.querySelectorAll('.status-card')[1].querySelector('.number').textContent = data.summary.total_approvals_generated;
-                document.querySelectorAll('.status-card')[2].querySelector('.number').textContent = data.summary.approved;
-                document.querySelectorAll('.status-card')[3].querySelector('.number').textContent = data.summary.pending;
-                document.querySelectorAll('.status-card')[4].querySelector('.number').textContent = data.summary.overdue;
+                // Update status cards
+                document.getElementById('approval-progress-number').textContent = 
+                    data.summary.approval_progress_percent.toFixed(0) + '%';
+                document.getElementById('milestone-progress-number').textContent = 
+                    data.summary.milestone_progress_percent.toFixed(0) + '%';
+                document.getElementById('total-items-number').textContent = 
+                    data.summary.total_approvals_generated;
+                document.getElementById('approved-number').textContent = 
+                    data.summary.approved;
+                document.getElementById('pending-number').textContent = 
+                    data.summary.pending;
                 
-                // Update status banner
-                const statusBanner = document.querySelector('.status-banner');
-                statusBanner.querySelector('h2').textContent = data.overall_status + ' - ' + data.status_message;
+                // Update status heading
+                document.getElementById('status-heading').textContent = 
+                    data.overall_status.replace('_', ' ') + ' - ' + data.status_message;
                 
-                // Update progress bars
-                document.querySelector('.progress-bar-fill').style.width = data.summary.progress_percent + '%';
-                document.querySelector('.progress-label span:last-child').textContent = data.summary.progress_percent.toFixed(1) + '%';
+                // Update approval progress bar
+                const approvalProgress = data.summary.approval_progress_percent;
+                document.getElementById('approval-progress-bar').style.width = approvalProgress + '%';
+                document.getElementById('approval-progress-label').textContent = 
+                    data.summary.approval_progress_status || (approvalProgress.toFixed(0) + '%');
                 
-                // Update CFO summary
-                document.getElementById('cfoSummaryText').innerHTML = data.cfo_summary.replace(/\\n/g, '<br>');
+                // Update milestone progress bar
+                const milestoneProgress = data.summary.milestone_progress_percent;
+                document.getElementById('milestone-progress-bar').style.width = milestoneProgress + '%';
+                document.getElementById('milestone-progress-label').textContent = 
+                    milestoneProgress.toFixed(1) + '%';
+                
+                // Update current stage indicator
+                const currentStage = data.current_stage;
+                const stageNameEl = document.getElementById('stage-name');
+                const stageStatusBadge = document.getElementById('stage-status-badge');
+                const stageProgressFill = document.getElementById('stage-progress-fill');
+                const stageProgressText = document.getElementById('stage-progress-text');
+                const stageContainer = document.getElementById('current-stage-container');
+                const stageIcon = document.getElementById('stage-icon');
+                
+                if (currentStage.status === 'COMPLETED') {{
+                    stageIcon.textContent = '✅';
+                    stageNameEl.textContent = currentStage.stage_name;
+                    stageStatusBadge.textContent = 'COMPLETED';
+                    stageStatusBadge.className = 'stage-indicator-status stage-status-completed';
+                    stageProgressFill.style.width = '100%';
+                    stageProgressText.textContent = '100%';
+                    stageContainer.style.borderLeftColor = '#28a745';
+                }} else if (currentStage.status === 'NOT_STARTED') {{
+                    stageIcon.textContent = '🔵';
+                    stageNameEl.textContent = currentStage.stage_name;
+                    stageStatusBadge.textContent = 'NOT STARTED';
+                    stageStatusBadge.className = 'stage-indicator-status stage-status-not-started';
+                    stageProgressFill.style.width = '0%';
+                    stageProgressText.textContent = '0%';
+                    stageContainer.style.borderLeftColor = '#6c757d';
+                }} else {{
+                    stageIcon.textContent = '🔄';
+                    stageNameEl.textContent = currentStage.stage_name;
+                    stageStatusBadge.textContent = 'IN PROGRESS';
+                    stageStatusBadge.className = 'stage-indicator-status stage-status-in-progress';
+                    stageProgressFill.style.width = currentStage.progress + '%';
+                    stageProgressText.textContent = currentStage.progress.toFixed(0) + '%';
+                    stageContainer.style.borderLeftColor = '#007bff';
+                }}
+                
+                // Update milestone list with progress
+                const milestoneContainer = document.getElementById('milestone-list');
+                let milestoneHtml = '';
+                
+                if (data.milestone_summary && data.milestone_summary.milestones) {{
+                    for (const [key, milestone] of Object.entries(data.milestone_summary.milestones)) {{
+                        const statusClass = milestone.status === 'COMPLETED' ? 'completed' : 
+                                          milestone.status === 'IN_PROGRESS' ? 'in-progress' : 'not-started';
+                        const statusIcon = milestone.status === 'COMPLETED' ? '✅' : 
+                                         milestone.status === 'IN_PROGRESS' ? '🔄' : '○';
+                        
+                        milestoneHtml += `
+                            <div class="milestone-item">
+                                <div class="milestone-header">
+                                    <span class="milestone-icon ${{statusClass}}">${{statusIcon}}</span>
+                                    <span class="milestone-name">${{milestone.name}}</span>
+                                    <span class="milestone-weight">(${{milestone.weight}}%)</span>
+                                </div>
+                                <div class="milestone-progress-container">
+                                    <div class="milestone-progress-bar ${{statusClass}}" 
+                                         style="width: ${{milestone.progress}}%"></div>
+                                </div>
+                                <div class="milestone-percent">${{milestone.progress.toFixed(0)}}% - ${{milestone.status.replace('_', ' ')}}</div>
+                            </div>
+                        `;
+                    }}
+                }}
+                
+                milestoneContainer.innerHTML = milestoneHtml;
+                
+                // Update badges
+                document.getElementById('critical-badge').textContent = 
+                    data.critical_blockers.length + ' Critical';
+                document.getElementById('pending-badge').textContent = 
+                    data.pending_items.length + ' Items';
+                document.getElementById('milestone-remaining-badge').textContent = 
+                    data.incomplete_milestones.length + ' Remaining';
             }}
             
             // Start auto-refresh on page load
@@ -8530,8 +9107,11 @@ def _render_audit_trail_html(approved_items: List[Dict], assigned_items: List[Di
 @app.get("/api/close/progress")
 async def get_close_progress_api(fiscal_period: str = Query("2026-03")):
     """
-    API endpoint to get close progress data as JSON (for auto-refresh)
+    CORRECTED: API endpoint to get close progress data as JSON (for auto-refresh)
     """
+    # Ensure milestones are updated from approval data
+    update_milestones_from_approvals(fiscal_period)
+    
     analysis = analyze_close_readiness(fiscal_period)
     cfo_summary = generate_cfo_summary(analysis)
     
@@ -8647,11 +9227,12 @@ def update_progress_after_approval():
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize system on startup"""
+    """Initialize system on startup with proper progress reset"""
     logger.info("="*60)
     logger.info("Finance Month-End Close AI Agent with Dashboard and Email starting up...")
     logger.info("="*60)
     logger.info(f"📊 Dashboard URL: {APP_BASE_URL}/dashboard")
+    logger.info(f"📊 Progress Dashboard: {APP_BASE_URL}/dashboard/progress")
     logger.info(f"💰 CFO Dashboard: {APP_BASE_URL}/cfo/financial_dashboard")
     logger.info(f"📧 Email Reports: {APP_BASE_URL}/reports/email/preview")
     logger.info(f"📚 API Documentation: {APP_BASE_URL}/docs")
@@ -8696,30 +9277,19 @@ async def startup_event():
     logger.info(f"📊 Data files: {files_found}/{len(required_files)} found")
     logger.info(f"📋 Pending approvals: {len(pending_approvals)}")
     logger.info(f"📋 Registered approvals: {len(approval_registry.generated_approvals)}")
-
+    
     # ================================================================
-    # ADD THIS SECTION HERE - Reset milestones and re-evaluate
+    # CORRECTED: Reset milestones to NOT_STARTED on fresh startup
     # ================================================================
-    logger.info("🔄 Initializing milestone progress...")
+    logger.info("🔄 Resetting milestone progress for new session...")
+    progress_tracker.reset()
     
-    # Reset all milestones to incomplete (False) on startup
-    for milestone_key in progress_tracker.milestones:
-        progress_tracker.update_milestone(milestone_key, False)
+    # Log current state (should be all NOT_STARTED)
+    overall = progress_tracker.calculate_overall_milestone_progress()
+    current = progress_tracker.get_current_stage()
+    logger.info(f"📊 Initial Milestone Progress: {overall:.1f}%")
+    logger.info(f"📍 Initial Current Stage: {current['stage_name']} ({current['status']})")
     
-    # Then re-evaluate based on existing approvals from registry
-    update_milestones_from_approvals("2026-03")
-    
-    # Log current milestone status
-    milestone_progress = progress_tracker.calculate_progress_percent()
-    logger.info(f"📊 Milestone Progress: {milestone_progress:.1f}%")
-    
-    incomplete = progress_tracker.get_incomplete_milestones()
-    if incomplete:
-        logger.info(f"📋 Incomplete milestones: {len(incomplete)}")
-        for m in incomplete[:3]:
-            logger.info(f"   - {m['name']} (Weight: {m['weight']}%)")
-    # ================================================================
-
     logger.info("="*60)
     logger.info("System startup completed successfully")
     logger.info("="*60)
