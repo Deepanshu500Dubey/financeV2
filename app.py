@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timedelta
@@ -79,6 +80,76 @@ APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
 # ============================================================================
 # DATA MODELS (Enhanced with Approval Tracking)
 # ============================================================================
+
+
+
+class ProactiveIssueStatus(str, Enum):
+    PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    RESOLVED = "RESOLVED"
+    BLOCKED = "BLOCKED"
+    SKIPPED = "SKIPPED"
+
+class ProactiveIssueSeverity(str, Enum):
+    CRITICAL = "CRITICAL"
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    INFO = "INFO"
+
+class ProactiveIssueCategory(str, Enum):
+    COST_CENTER = "COST_CENTER"
+    AR_VARIANCE = "AR_VARIANCE"
+    INTERCOMPANY = "INTERCOMPANY"
+    ACCRUAL = "ACCRUAL"
+    PREPAYMENT = "PREPAYMENT"
+    BANK_RECONCILIATION = "BANK_RECONCILIATION"
+    BUDGET_VARIANCE = "BUDGET_VARIANCE"
+    OVERDUE_INVOICE = "OVERDUE_INVOICE"
+    INVALID_ACCOUNT = "INVALID_ACCOUNT"
+    DATA_VALIDATION = "DATA_VALIDATION"
+
+# ============================================================================
+# PROACTIVE SCANNING MODELS (Add after your existing models)
+# ============================================================================
+
+class ProactiveIssue(BaseModel):
+    issue_id: str
+    category: ProactiveIssueCategory
+    severity: ProactiveIssueSeverity
+    description: str
+    details: Dict[str, Any]
+    suggested_action: str
+    status: ProactiveIssueStatus = ProactiveIssueStatus.PENDING
+    created_at: datetime = Field(default_factory=datetime.now)
+    resolved_at: Optional[datetime] = None
+    approval_token: Optional[str] = None
+    assigned_to: Optional[str] = None
+
+
+class ScanResult(BaseModel):
+    scan_id: str
+    fiscal_period: str
+    scan_timestamp: datetime
+    total_issues: int
+    issues_by_severity: Dict[str, int]
+    issues_by_category: Dict[str, int]
+    issues_by_status: Dict[str, int]
+    can_proceed_to_close: bool
+    estimated_resolution_time: str
+    issues: List[ProactiveIssue]
+
+
+class ProgressUpdate(BaseModel):
+    scan_id: str
+    total_issues: int
+    resolved_issues: int
+    pending_issues: int
+    blocked_issues: int
+    progress_percentage: float
+    estimated_remaining: str
+    last_updated: datetime
+    recent_resolutions: List[Dict[str, Any]]
 
 class SeverityLevel(str, Enum):
     CRITICAL = "CRITICAL"
@@ -231,6 +302,456 @@ class EmailReportResponse(BaseModel):
     recipients: List[str]
     reports_sent: List[str]
     timestamp: datetime = Field(default_factory=datetime.now)
+
+
+class ProactiveWebSocketManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+        self.scan_subscriptions: Dict[str, List[WebSocket]] = {}
+    
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(f"WebSocket connected. Total: {len(self.active_connections)}")
+    
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        for scan_id in list(self.scan_subscriptions.keys()):
+            if websocket in self.scan_subscriptions[scan_id]:
+                self.scan_subscriptions[scan_id].remove(websocket)
+    
+    async def subscribe(self, websocket: WebSocket, scan_id: str):
+        if scan_id not in self.scan_subscriptions:
+            self.scan_subscriptions[scan_id] = []
+        if websocket not in self.scan_subscriptions[scan_id]:
+            self.scan_subscriptions[scan_id].append(websocket)
+    
+    async def broadcast_progress(self, scan_id: str, progress_update: ProgressUpdate):
+        if scan_id in self.scan_subscriptions:
+            message = progress_update.model_dump()
+            for connection in self.scan_subscriptions[scan_id]:
+                try:
+                    await connection.send_json(message)
+                except Exception:
+                    pass
+
+
+# ============================================================================
+# PROACTIVE SCAN ENGINE
+# ============================================================================
+
+class ProactiveScanEngine:
+    def __init__(self):
+        self.active_scans: Dict[str, ScanResult] = {}
+        self.issue_status_updates: Dict[str, List[Dict]] = {}
+        self.ws_manager = ProactiveWebSocketManager()
+    
+    async def perform_comprehensive_scan(self, fiscal_period: str, entity_code: str = "AUS01") -> ScanResult:
+        scan_id = f"scan_{fiscal_period}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        all_issues = []
+        issues_by_severity = defaultdict(int)
+        issues_by_category = defaultdict(int)
+        
+        logger.info(f"🔍 Starting comprehensive scan for {fiscal_period}")
+        
+        # Scan 1: Missing Cost Centers
+        cost_center_issues = await self._scan_cost_center_issues(fiscal_period)
+        all_issues.extend(cost_center_issues)
+        
+        # Scan 2: AR/GL Variance
+        ar_issues = await self._scan_ar_variance_issues(fiscal_period)
+        all_issues.extend(ar_issues)
+        
+        # Scan 3: Intercompany
+        ic_issues = await self._scan_intercompany_issues(fiscal_period)
+        all_issues.extend(ic_issues)
+        
+        # Scan 4: Accruals
+        accrual_issues = await self._scan_accrual_issues(fiscal_period)
+        all_issues.extend(accrual_issues)
+        
+        # Scan 5: Bank Reconciliation
+        bank_issues = await self._scan_bank_issues(fiscal_period)
+        all_issues.extend(bank_issues)
+        
+        # Scan 6: Budget Variances
+        budget_issues = await self._scan_budget_issues(fiscal_period)
+        all_issues.extend(budget_issues)
+        
+        # Scan 7: Overdue Invoices
+        overdue_issues = await self._scan_overdue_invoice_issues(fiscal_period)
+        all_issues.extend(overdue_issues)
+        
+        # Scan 8: Invalid Accounts
+        invalid_issues = await self._scan_invalid_account_issues(fiscal_period)
+        all_issues.extend(invalid_issues)
+        
+        # Count by severity and category
+        for issue in all_issues:
+            issues_by_severity[issue.severity.value] += 1
+            issues_by_category[issue.category.value] += 1
+        
+        # Determine if can proceed to close
+        critical_count = issues_by_severity.get(ProactiveIssueSeverity.CRITICAL.value, 0)
+        high_count = issues_by_severity.get(ProactiveIssueSeverity.HIGH.value, 0)
+        can_proceed = (critical_count == 0 and high_count == 0)
+        
+        # Estimate resolution time
+        total_weight = 0
+        for issue in all_issues:
+            if issue.severity == ProactiveIssueSeverity.CRITICAL:
+                total_weight += 60
+            elif issue.severity == ProactiveIssueSeverity.HIGH:
+                total_weight += 30
+            elif issue.severity == ProactiveIssueSeverity.MEDIUM:
+                total_weight += 15
+            else:
+                total_weight += 5
+        
+        if total_weight < 60:
+            estimated_time = f"{total_weight} minutes"
+        elif total_weight < 120:
+            estimated_time = f"{total_weight // 60} hour {total_weight % 60} minutes"
+        else:
+            estimated_time = f"{total_weight // 60} hours"
+        
+        scan_result = ScanResult(
+            scan_id=scan_id,
+            fiscal_period=fiscal_period,
+            scan_timestamp=datetime.now(),
+            total_issues=len(all_issues),
+            issues_by_severity=dict(issues_by_severity),
+            issues_by_category=dict(issues_by_category),
+            issues_by_status={},
+            can_proceed_to_close=can_proceed,
+            estimated_resolution_time=estimated_time,
+            issues=all_issues
+        )
+        
+        self.active_scans[scan_id] = scan_result
+        self.issue_status_updates[scan_id] = []
+        
+        logger.info(f"✅ Scan complete: {len(all_issues)} issues found")
+        return scan_result
+    
+    async def _scan_cost_center_issues(self, fiscal_period: str) -> List[ProactiveIssue]:
+        issues = []
+        try:
+            if os.path.exists('Raw_GL_Export_With_CostCenters_Mar2026.csv'):
+                with open('Raw_GL_Export_With_CostCenters_Mar2026.csv', 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    transactions = list(reader)
+                
+                period_txns = [t for t in transactions if t.get('Fiscal_Period') == fiscal_period]
+                missing = [t for t in period_txns if not t.get('Cost_Center', '')]
+                
+                if missing:
+                    total_amount = sum(float(t.get('Amount', 0)) for t in missing)
+                    severity = ProactiveIssueSeverity.CRITICAL if len(missing) > 10 or total_amount > 1000000 else ProactiveIssueSeverity.HIGH
+                    
+                    # Create approval items for missing cost centers
+                    for txn in missing[:5]:  # Create approvals for first 5
+                        approval_item = create_approval_item(
+                            item_type="Missing Cost Center",
+                            description=f"Transaction {txn.get('Txn_ID', 'Unknown')}: {txn.get('Narrative', '')[:50]}",
+                            amount=float(txn.get('Amount', 0)),
+                            account=txn.get('Account_Code_Raw', ''),
+                            metadata={"transaction_id": txn.get('Txn_ID', '')},
+                            fiscal_period=fiscal_period
+                        )
+                    
+                    issues.append(ProactiveIssue(
+                        issue_id=f"CC_MISSING_{fiscal_period}",
+                        category=ProactiveIssueCategory.COST_CENTER,
+                        severity=severity,
+                        description=f"{len(missing)} transactions missing cost center assignments (${total_amount:,.2f})",
+                        details={"count": len(missing), "total_amount": total_amount},
+                        suggested_action="Assign cost centers to all transactions. Use AI suggestions for pattern-based recommendations."
+                    ))
+        except Exception as e:
+            logger.error(f"Error scanning cost centers: {e}")
+        return issues
+    
+    async def _scan_ar_variance_issues(self, fiscal_period: str) -> List[ProactiveIssue]:
+        issues = []
+        try:
+            if os.path.exists('AR_Subledger_Mar2026.csv') and os.path.exists('Raw_GL_Export_With_CostCenters_Mar2026.csv'):
+                with open('AR_Subledger_Mar2026.csv', 'r') as f:
+                    ar_records = list(csv.DictReader(f))
+                with open('Raw_GL_Export_With_CostCenters_Mar2026.csv', 'r') as f:
+                    transactions = list(csv.DictReader(f))
+                
+                ar_outstanding = sum(float(r.get('Outstanding_Balance', 0)) for r in ar_records)
+                period_txns = [t for t in transactions if t.get('Fiscal_Period') == fiscal_period]
+                gl_ar_balance = sum(float(t.get('Amount', 0)) for t in period_txns if t.get('Account_Code_Raw') == '1100')
+                variance = ar_outstanding - gl_ar_balance
+                
+                if abs(variance) > 1000:
+                    severity = ProactiveIssueSeverity.CRITICAL if abs(variance) > 100000 else ProactiveIssueSeverity.HIGH
+                    
+                    # Create approval item for variance
+                    approval_item = create_approval_item(
+                        item_type="AR Variance Correction",
+                        description=f"Journal entry to correct ${variance:,.2f} AR/GL variance",
+                        amount=abs(variance),
+                        account="1100",
+                        metadata={"variance": variance, "ar_subledger": ar_outstanding, "gl_balance": gl_ar_balance},
+                        fiscal_period=fiscal_period
+                    )
+                    
+                    issues.append(ProactiveIssue(
+                        issue_id=f"AR_VAR_{fiscal_period}",
+                        category=ProactiveIssueCategory.AR_VARIANCE,
+                        severity=severity,
+                        description=f"AR/GL Variance of ${variance:,.2f} detected",
+                        details={"ar_subledger": ar_outstanding, "gl_balance": gl_ar_balance, "variance": variance},
+                        suggested_action="Investigate root cause and post adjustment journal entry.",
+                        approval_token=approval_item.token
+                    ))
+        except Exception as e:
+            logger.error(f"Error scanning AR variance: {e}")
+        return issues
+    
+    async def _scan_intercompany_issues(self, fiscal_period: str) -> List[ProactiveIssue]:
+        issues = []
+        try:
+            if os.path.exists('Intercompany_Reconciliation_Mar2026.csv'):
+                with open('Intercompany_Reconciliation_Mar2026.csv', 'r') as f:
+                    reconciliation = list(csv.DictReader(f))
+                
+                period_rec = [r for r in reconciliation if r.get('Period') == fiscal_period]
+                material = [r for r in period_rec if r.get('Materiality') == 'Material']
+                
+                if material:
+                    total_variance = sum(abs(float(r.get('Variance_AUD', 0))) for r in material)
+                    
+                    for r in material[:3]:
+                        approval_item = create_approval_item(
+                            item_type="Intercompany Variance",
+                            description=f"{r.get('Entity')} ↔ {r.get('Counterparty_Entity')} - {r.get('Root_Cause', 'Variance')}",
+                            amount=abs(float(r.get('Variance_AUD', 0))),
+                            metadata={"entity_pair": f"{r.get('Entity')} ↔ {r.get('Counterparty_Entity')}"},
+                            fiscal_period=fiscal_period
+                        )
+                    
+                    issues.append(ProactiveIssue(
+                        issue_id=f"IC_VAR_{fiscal_period}",
+                        category=ProactiveIssueCategory.INTERCOMPANY,
+                        severity=ProactiveIssueSeverity.HIGH,
+                        description=f"{len(material)} material intercompany variances totaling ${total_variance:,.2f}",
+                        details={"count": len(material), "total_variance": total_variance},
+                        suggested_action="Review and resolve intercompany variances. Post elimination journals."
+                    ))
+        except Exception as e:
+            logger.error(f"Error scanning intercompany: {e}")
+        return issues
+    
+    async def _scan_accrual_issues(self, fiscal_period: str) -> List[ProactiveIssue]:
+        issues = []
+        try:
+            if os.path.exists('Accruals_Register_Mar2026.csv'):
+                with open('Accruals_Register_Mar2026.csv', 'r') as f:
+                    accruals = list(csv.DictReader(f))
+                
+                period_accruals = [a for a in accruals if a.get('Period') == fiscal_period]
+                material = [a for a in period_accruals if a.get('Materiality') == 'Material']
+                
+                if material:
+                    total_variance = sum(abs(float(a.get('Variance', 0))) for a in material)
+                    issues.append(ProactiveIssue(
+                        issue_id=f"ACC_VAR_{fiscal_period}",
+                        category=ProactiveIssueCategory.ACCRUAL,
+                        severity=ProactiveIssueSeverity.MEDIUM,
+                        description=f"{len(material)} material accrual variances totaling ${total_variance:,.2f}",
+                        details={"count": len(material), "total_variance": total_variance},
+                        suggested_action="Review material accrual variances and post adjustment journals."
+                    ))
+        except Exception as e:
+            logger.error(f"Error scanning accruals: {e}")
+        return issues
+    
+    async def _scan_bank_issues(self, fiscal_period: str) -> List[ProactiveIssue]:
+        issues = []
+        try:
+            if os.path.exists('GL_Cash_Balances_Mar2026.csv'):
+                with open('GL_Cash_Balances_Mar2026.csv', 'r') as f:
+                    gl_balances = list(csv.DictReader(f))
+                
+                unreconciled = [g for g in gl_balances if g.get('Reconciliation_Status') != 'Reconciled']
+                
+                if unreconciled:
+                    total_variance = sum(abs(float(g.get('Variance_AUD', 0))) for g in unreconciled)
+                    issues.append(ProactiveIssue(
+                        issue_id=f"BANK_UNREC_{fiscal_period}",
+                        category=ProactiveIssueCategory.BANK_RECONCILIATION,
+                        severity=ProactiveIssueSeverity.HIGH,
+                        description=f"{len(unreconciled)} bank accounts not reconciled (${total_variance:,.2f} variance)",
+                        details={"accounts": unreconciled},
+                        suggested_action="Complete bank reconciliation for all accounts."
+                    ))
+        except Exception as e:
+            logger.error(f"Error scanning bank: {e}")
+        return issues
+    
+    async def _scan_budget_issues(self, fiscal_period: str) -> List[ProactiveIssue]:
+        issues = []
+        try:
+            if os.path.exists('Budget_Mar2026_Detailed.csv') and os.path.exists('Master_COA_Complete.csv'):
+                with open('Budget_Mar2026_Detailed.csv', 'r') as f:
+                    budget_data = list(csv.DictReader(f))
+                
+                significant = []
+                for item in budget_data:
+                    if item.get('Category', '').upper() != 'TOTAL':
+                        variance_pct = float(item.get('Variance_Percent', 0))
+                        if abs(variance_pct) > 10:
+                            significant.append(item)
+                
+                if significant:
+                    issues.append(ProactiveIssue(
+                        issue_id=f"BUDGET_VAR_{fiscal_period}",
+                        category=ProactiveIssueCategory.BUDGET_VARIANCE,
+                        severity=ProactiveIssueSeverity.LOW,
+                        description=f"{len(significant)} categories with >10% budget variance",
+                        details={"variances": significant[:10]},
+                        suggested_action="Review significant budget variances and document explanations."
+                    ))
+        except Exception as e:
+            logger.error(f"Error scanning budget: {e}")
+        return issues
+    
+    async def _scan_overdue_invoice_issues(self, fiscal_period: str) -> List[ProactiveIssue]:
+        issues = []
+        try:
+            if os.path.exists('AR_Subledger_Mar2026.csv'):
+                with open('AR_Subledger_Mar2026.csv', 'r') as f:
+                    ar_records = list(csv.DictReader(f))
+                
+                overdue = [r for r in ar_records if r.get('Status') == 'Overdue']
+                
+                if overdue:
+                    total_amount = sum(float(r.get('Outstanding_Balance', 0)) for r in overdue)
+                    severity = ProactiveIssueSeverity.HIGH if any(int(r.get('Days_Outstanding', 0)) > 90 for r in overdue) else ProactiveIssueSeverity.MEDIUM
+                    
+                    issues.append(ProactiveIssue(
+                        issue_id=f"OVERDUE_{fiscal_period}",
+                        category=ProactiveIssueCategory.OVERDUE_INVOICE,
+                        severity=severity,
+                        description=f"{len(overdue)} overdue invoices totaling ${total_amount:,.2f}",
+                        details={"count": len(overdue), "total_amount": total_amount},
+                        suggested_action="Contact customers for payment. Consider escalation for 90+ days overdue."
+                    ))
+        except Exception as e:
+            logger.error(f"Error scanning overdue: {e}")
+        return issues
+    
+    async def _scan_invalid_account_issues(self, fiscal_period: str) -> List[ProactiveIssue]:
+        issues = []
+        try:
+            if os.path.exists('Master_COA_Complete.csv') and os.path.exists('Raw_GL_Export_With_CostCenters_Mar2026.csv'):
+                with open('Master_COA_Complete.csv', 'r') as f:
+                    coa_data = list(csv.DictReader(f))
+                with open('Raw_GL_Export_With_CostCenters_Mar2026.csv', 'r') as f:
+                    transactions = list(csv.DictReader(f))
+                
+                valid_accounts = {row.get('Account_Code') for row in coa_data}
+                period_txns = [t for t in transactions if t.get('Fiscal_Period') == fiscal_period]
+                invalid = [t for t in period_txns if t.get('Account_Code_Raw') not in valid_accounts]
+                
+                if invalid:
+                    total_amount = sum(float(t.get('Amount', 0)) for t in invalid)
+                    issues.append(ProactiveIssue(
+                        issue_id=f"INVALID_ACCT_{fiscal_period}",
+                        category=ProactiveIssueCategory.INVALID_ACCOUNT,
+                        severity=ProactiveIssueSeverity.HIGH,
+                        description=f"{len(invalid)} transactions with invalid account codes (${total_amount:,.2f})",
+                        details={"count": len(invalid), "invalid_accounts": list(set(t.get('Account_Code_Raw') for t in invalid))},
+                        suggested_action="Map invalid account codes to valid COA entries."
+                    ))
+        except Exception as e:
+            logger.error(f"Error scanning invalid accounts: {e}")
+        return issues
+    
+    def get_scan_result(self, scan_id: str) -> Optional[ScanResult]:
+        return self.active_scans.get(scan_id)
+    
+    def update_issue_status(self, scan_id: str, issue_id: str, new_status: ProactiveIssueStatus, resolver: str = None) -> bool:
+        if scan_id not in self.active_scans:
+            return False
+        
+        scan = self.active_scans[scan_id]
+        for issue in scan.issues:
+            if issue.issue_id == issue_id:
+                old_status = issue.status
+                issue.status = new_status
+                if new_status == ProactiveIssueStatus.RESOLVED:
+                    issue.resolved_at = datetime.now()
+                
+                self.issue_status_updates[scan_id].append({
+                    "issue_id": issue_id,
+                    "old_status": old_status.value,
+                    "new_status": new_status.value,
+                    "resolver": resolver,
+                    "timestamp": datetime.now().isoformat()
+                })
+                
+                # Update scan summary
+                status_counts = defaultdict(int)
+                for iss in scan.issues:
+                    status_counts[iss.status.value] += 1
+                scan.issues_by_status = dict(status_counts)
+                return True
+        return False
+    
+    def get_progress_update(self, scan_id: str) -> Optional[ProgressUpdate]:
+        if scan_id not in self.active_scans:
+            return None
+        
+        scan = self.active_scans[scan_id]
+        resolved = sum(1 for i in scan.issues if i.status == ProactiveIssueStatus.RESOLVED)
+        pending = sum(1 for i in scan.issues if i.status == ProactiveIssueStatus.PENDING)
+        blocked = sum(1 for i in scan.issues if i.status == ProactiveIssueStatus.BLOCKED)
+        progress = (resolved / scan.total_issues * 100) if scan.total_issues > 0 else 100
+        
+        # Calculate remaining time
+        remaining_minutes = 0
+        for issue in scan.issues:
+            if issue.status != ProactiveIssueStatus.RESOLVED:
+                if issue.severity == ProactiveIssueSeverity.CRITICAL:
+                    remaining_minutes += 60
+                elif issue.severity == ProactiveIssueSeverity.HIGH:
+                    remaining_minutes += 30
+                elif issue.severity == ProactiveIssueSeverity.MEDIUM:
+                    remaining_minutes += 15
+                else:
+                    remaining_minutes += 5
+        
+        if remaining_minutes < 60:
+            estimated_remaining = f"{remaining_minutes} minutes"
+        elif remaining_minutes < 120:
+            estimated_remaining = f"{remaining_minutes // 60} hour {remaining_minutes % 60} minutes"
+        else:
+            estimated_remaining = f"{remaining_minutes // 60} hours"
+        
+        recent = [{"issue_id": u["issue_id"], "resolver": u.get("resolver"), "timestamp": u["timestamp"]} 
+                  for u in self.issue_status_updates.get(scan_id, [])[-10:]]
+        
+        return ProgressUpdate(
+            scan_id=scan_id,
+            total_issues=scan.total_issues,
+            resolved_issues=resolved,
+            pending_issues=pending,
+            blocked_issues=blocked,
+            progress_percentage=progress,
+            estimated_remaining=estimated_remaining,
+            last_updated=datetime.now(),
+            recent_resolutions=recent
+        )
+
+
+# Initialize the scan engine
+proactive_engine = ProactiveScanEngine()
 
 # ============================================================================
 # APPROVAL REGISTRY - Tracks ALL approvals generated during the session
@@ -1016,6 +1537,9 @@ def generate_cfo_summary(analysis: Dict[str, Any]) -> str:
         lines.append(f"\n**✅ Completed Items:** {summary['approved']} approvals processed successfully.")
     
     return "\n".join(lines)
+
+
+
 # ============================================================================
 # HELPER FUNCTION FOR TRIAL BALANCE DATA
 # ============================================================================
@@ -8639,6 +9163,509 @@ def update_progress_after_approval():
     """Call this after any approval decision to update progress"""
     update_milestones_from_approvals("2026-03")
     logger.info("📊 Updated close progress milestones based on current state")
+
+
+
+@app.post("/proactive/scan")
+async def start_proactive_scan(
+    fiscal_period: str = Query("2026-03", description="Fiscal period to scan"),
+    entity_code: str = Query("AUS01", description="Entity code")
+):
+    """Start a comprehensive pre-analysis scan - identifies ALL issues upfront"""
+    try:
+        scan_result = await proactive_engine.perform_comprehensive_scan(fiscal_period, entity_code)
+        return {
+            "success": True,
+            "scan_id": scan_result.scan_id,
+            "summary": {
+                "total_issues": scan_result.total_issues,
+                "by_severity": scan_result.issues_by_severity,
+                "by_category": scan_result.issues_by_category,
+                "can_proceed_to_close": scan_result.can_proceed_to_close,
+                "estimated_resolution_time": scan_result.estimated_resolution_time
+            },
+            "issues": [issue.model_dump() for issue in scan_result.issues],
+            "message": f"Scan complete. Found {scan_result.total_issues} issues to resolve."
+        }
+    except Exception as e:
+        logger.error(f"Scan error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/proactive/scan/{scan_id}")
+async def get_scan_results(scan_id: str):
+    """Get detailed scan results"""
+    scan_result = proactive_engine.get_scan_result(scan_id)
+    if not scan_result:
+        raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
+    return {"success": True, "scan": scan_result.model_dump()}
+
+
+@app.get("/proactive/scan/{scan_id}/progress")
+async def get_scan_progress(scan_id: str):
+    """Get current progress of issue resolution"""
+    progress = proactive_engine.get_progress_update(scan_id)
+    if not progress:
+        raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
+    return {"success": True, "progress": progress.model_dump()}
+
+
+@app.post("/proactive/scan/{scan_id}/issue/{issue_id}/resolve")
+async def resolve_proactive_issue(
+    scan_id: str,
+    issue_id: str,
+    resolver: str = Query("Dashboard User", description="Name of resolver")
+):
+    """Mark an issue as resolved"""
+    success = proactive_engine.update_issue_status(scan_id, issue_id, ProactiveIssueStatus.RESOLVED, resolver)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Issue {issue_id} not found in scan {scan_id}")
+    
+    progress = proactive_engine.get_progress_update(scan_id)
+    if progress:
+        await proactive_engine.ws_manager.broadcast_progress(scan_id, progress)
+    
+    return {
+        "success": True,
+        "message": f"Issue {issue_id} marked as resolved by {resolver}",
+        "progress": progress.model_dump() if progress else None
+    }
+
+
+@app.post("/proactive/scan/{scan_id}/issue/{issue_id}/status")
+async def update_proactive_issue_status(
+    scan_id: str,
+    issue_id: str,
+    status: ProactiveIssueStatus,
+    resolver: str = Query("System")
+):
+    """Update issue status"""
+    success = proactive_engine.update_issue_status(scan_id, issue_id, status, resolver)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Issue {issue_id} not found in scan {scan_id}")
+    
+    progress = proactive_engine.get_progress_update(scan_id)
+    if progress:
+        await proactive_engine.ws_manager.broadcast_progress(scan_id, progress)
+    
+    return {
+        "success": True,
+        "message": f"Issue {issue_id} status updated to {status.value}",
+        "progress": progress.model_dump() if progress else None
+    }
+
+
+@app.websocket("/ws/proactive/{scan_id}")
+async def websocket_proactive(websocket: WebSocket, scan_id: str):
+    """WebSocket connection for real-time progress updates"""
+    await proactive_engine.ws_manager.connect(websocket)
+    await proactive_engine.ws_manager.subscribe(websocket, scan_id)
+    
+    # Send initial progress
+    progress = proactive_engine.get_progress_update(scan_id)
+    if progress:
+        await websocket.send_json(progress.model_dump())
+    
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_json({"type": "pong"})
+            elif data.startswith("resolve:"):
+                issue_id = data.split(":")[1]
+                proactive_engine.update_issue_status(scan_id, issue_id, ProactiveIssueStatus.RESOLVED, "WebSocket")
+                progress = proactive_engine.get_progress_update(scan_id)
+                if progress:
+                    await websocket.send_json({"type": "progress", "data": progress.model_dump()})
+    except WebSocketDisconnect:
+        proactive_engine.ws_manager.disconnect(websocket)
+
+
+@app.get("/proactive/dashboard", response_class=HTMLResponse)
+async def proactive_dashboard():
+    """Proactive dashboard HTML page"""
+    return get_proactive_dashboard_html()
+
+
+# ============================================================================
+# PROACTIVE DASHBOARD HTML
+# ============================================================================
+
+def get_proactive_dashboard_html() -> str:
+    return """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Proactive Close Dashboard - Complete Issue Tracking</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; padding: 20px; }
+        .dashboard { max-width: 1600px; margin: 0 auto; }
+        
+        .header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: white; padding: 30px; border-radius: 15px; margin-bottom: 25px; }
+        .header h1 { font-size: 2em; margin-bottom: 10px; }
+        .scan-controls { margin-top: 20px; display: flex; gap: 15px; align-items: center; flex-wrap: wrap; }
+        .scan-controls select, .scan-controls button { padding: 12px 20px; border-radius: 8px; border: none; font-size: 1em; cursor: pointer; }
+        .scan-controls select { background: rgba(255,255,255,0.2); color: white; }
+        .scan-controls select option { background: #1a1a2e; }
+        .btn-primary { background: #00b4d8; color: white; transition: all 0.3s; }
+        .btn-primary:hover { background: #0077b6; transform: translateY(-2px); }
+        
+        .progress-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 25px; }
+        .progress-card { background: white; padding: 20px; border-radius: 12px; text-align: center; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .progress-card .value { font-size: 2.5em; font-weight: bold; color: #1a1a2e; }
+        .progress-card .label { color: #666; margin-top: 5px; }
+        
+        .main-progress { background: white; padding: 25px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .progress-bar-container { background: #e0e0e0; border-radius: 20px; height: 30px; overflow: hidden; margin: 15px 0; }
+        .progress-bar-fill { background: linear-gradient(90deg, #00b4d8, #0077b6); height: 100%; border-radius: 20px; transition: width 0.5s ease; display: flex; align-items: center; justify-content: flex-end; padding-right: 15px; color: white; font-weight: bold; }
+        
+        .status-badges { display: flex; gap: 20px; justify-content: center; margin-top: 15px; flex-wrap: wrap; }
+        .badge { padding: 5px 12px; border-radius: 20px; font-size: 0.85em; }
+        .badge-critical { background: #dc3545; color: white; }
+        .badge-high { background: #fd7e14; color: white; }
+        .badge-medium { background: #ffc107; color: #333; }
+        .badge-low { background: #28a745; color: white; }
+        
+        .two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 25px; margin-bottom: 25px; }
+        @media (max-width: 768px) { .two-column { grid-template-columns: 1fr; } }
+        
+        .card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .card-header { padding: 15px 20px; background: #f8f9fa; border-bottom: 2px solid #1a1a2e; font-weight: bold; font-size: 1.1em; }
+        .card-content { padding: 20px; max-height: 500px; overflow-y: auto; }
+        
+        .issue-item { padding: 15px; border-bottom: 1px solid #e0e0e0; cursor: pointer; transition: background 0.2s; }
+        .issue-item:hover { background: #f5f5f5; }
+        .issue-item.resolved { opacity: 0.6; background: #e8f5e9; }
+        .issue-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 10px; }
+        .issue-title { font-weight: bold; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        
+        .severity-badge { padding: 2px 8px; border-radius: 12px; font-size: 0.7em; font-weight: bold; }
+        .severity-CRITICAL { background: #dc3545; color: white; }
+        .severity-HIGH { background: #fd7e14; color: white; }
+        .severity-MEDIUM { background: #ffc107; color: #333; }
+        .severity-LOW { background: #28a745; color: white; }
+        
+        .status-badge { padding: 2px 8px; border-radius: 12px; font-size: 0.7em; }
+        .status-PENDING { background: #ffc107; color: #333; }
+        .status-RESOLVED { background: #28a745; color: white; }
+        
+        .issue-description { color: #555; font-size: 0.9em; margin-bottom: 8px; }
+        .issue-details { font-size: 0.85em; color: #666; margin-top: 8px; padding-left: 15px; border-left: 2px solid #e0e0e0; }
+        .issue-actions { margin-top: 10px; display: flex; gap: 10px; }
+        
+        .btn-sm { padding: 5px 12px; font-size: 0.8em; border-radius: 5px; border: none; cursor: pointer; transition: all 0.2s; }
+        .btn-resolve { background: #28a745; color: white; }
+        .btn-resolve:hover { background: #1b5e20; }
+        
+        .live-indicator { display: inline-flex; align-items: center; gap: 8px; background: rgba(0,184,212,0.2); padding: 5px 12px; border-radius: 20px; font-size: 0.8em; }
+        .live-dot { width: 10px; height: 10px; background: #00b4d8; border-radius: 50%; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); }
+        .modal-content { background-color: white; margin: 5% auto; padding: 25px; border-radius: 12px; width: 90%; max-width: 600px; max-height: 80vh; overflow-y: auto; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid #1a1a2e; }
+        .close { font-size: 28px; font-weight: bold; cursor: pointer; color: #aaa; }
+        .close:hover { color: #333; }
+        
+        .toast { position: fixed; bottom: 20px; right: 20px; background: #1a1a2e; color: white; padding: 12px 20px; border-radius: 8px; z-index: 1001; animation: slideIn 0.3s ease; }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        
+        .loading { text-align: center; padding: 40px; }
+        .spinner { width: 40px; height: 40px; border: 3px solid #e0e0e0; border-top-color: #1a1a2e; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 15px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        .footer { text-align: center; margin-top: 30px; padding: 20px; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="dashboard">
+        <div class="header">
+            <h1>🔍 Proactive Close Dashboard</h1>
+            <p>Complete pre-analysis scan | Real-time progress tracking | All issues identified upfront</p>
+            <div class="scan-controls">
+                <select id="periodSelect">
+                    <option value="2026-03">March 2026</option>
+                    <option value="2026-02">February 2026</option>
+                    <option value="2026-01">January 2026</option>
+                </select>
+                <button class="btn-primary" onclick="startScan()">🚀 Start Comprehensive Scan</button>
+                <div id="liveIndicator" class="live-indicator" style="display: none;">
+                    <span class="live-dot"></span>
+                    <span>Live Updates Connected</span>
+                </div>
+            </div>
+        </div>
+        
+        <div id="progressCards" class="progress-cards" style="display: none;">
+            <div class="progress-card"><div class="value" id="totalIssues">0</div><div class="label">Total Issues</div></div>
+            <div class="progress-card"><div class="value" id="resolvedIssues">0</div><div class="label">Resolved</div></div>
+            <div class="progress-card"><div class="value" id="pendingIssues">0</div><div class="label">Pending</div></div>
+            <div class="progress-card"><div class="value" id="blockedIssues">0</div><div class="label">Blocked</div></div>
+        </div>
+        
+        <div id="mainProgress" class="main-progress" style="display: none;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                <span><strong>Close Readiness Progress</strong></span>
+                <span id="progressPercent">0%</span>
+            </div>
+            <div class="progress-bar-container">
+                <div class="progress-bar-fill" id="progressFill" style="width: 0%">0%</div>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-top: 10px;">
+                <span>⚠️ Estimated remaining: <span id="estimatedRemaining">-</span></span>
+                <span id="canCloseStatus">📋 Status: Pending</span>
+            </div>
+            <div class="status-badges" id="severityBadges"></div>
+        </div>
+        
+        <div class="two-column" id="contentArea" style="display: none;">
+            <div class="card">
+                <div class="card-header">📋 Issues by Category</div>
+                <div class="card-content" id="categoryList"></div>
+            </div>
+            <div class="card">
+                <div class="card-header">⚠️ Priority Issues (Critical & High)</div>
+                <div class="card-content" id="priorityIssues"></div>
+            </div>
+        </div>
+        
+        <div class="card" id="allIssuesCard" style="display: none; margin-bottom: 25px;">
+            <div class="card-header">📝 All Identified Issues <span style="font-size: 0.8em; font-weight: normal;">(Click to expand | Use "Resolve" when completed)</span></div>
+            <div class="card-content" id="allIssuesList"></div>
+        </div>
+        
+        <div class="footer">
+            <p><a href="/dashboard">← Back to Approval Dashboard</a> | <a href="/cfo/financial_dashboard">💰 CFO Dashboard</a></p>
+            <p>Proactive Progress Dashboard | Identifies ALL issues upfront | Real-time updates as issues are resolved</p>
+        </div>
+    </div>
+    
+    <div id="issueModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header"><h3 id="modalTitle">Issue Details</h3><span class="close" onclick="closeModal()">&times;</span></div>
+            <div id="modalBody"></div>
+            <div style="margin-top: 20px; display: flex; gap: 10px; justify-content: flex-end;">
+                <button class="btn-sm btn-resolve" onclick="resolveCurrentIssue()">✓ Mark as Resolved</button>
+                <button class="btn-sm btn-skip" onclick="closeModal()">Close</button>
+            </div>
+        </div>
+    </div>
+    <div id="toastContainer"></div>
+    
+    <script>
+        let currentScanId = null, websocket = null, currentIssues = [], currentModalIssueId = null;
+        
+        async function startScan() {
+            const period = document.getElementById('periodSelect').value;
+            showToast('🔍 Starting comprehensive pre-analysis scan...', 'info');
+            try {
+                const response = await fetch(`/proactive/scan?fiscal_period=${period}&entity_code=AUS01`, { method: 'POST' });
+                const data = await response.json();
+                if (data.success) {
+                    currentScanId = data.scan_id;
+                    currentIssues = data.issues;
+                    updateDashboard(data);
+                    connectWebSocket(currentScanId);
+                    showToast(`✅ Scan complete! Found ${data.summary.total_issues} issues to resolve.`, 'success');
+                } else {
+                    showToast('❌ Scan failed: ' + (data.message || 'Unknown error'), 'error');
+                }
+            } catch (error) {
+                showToast('❌ Error starting scan', 'error');
+            }
+        }
+        
+        function updateDashboard(data) {
+            const summary = data.summary;
+            document.getElementById('progressCards').style.display = 'grid';
+            document.getElementById('mainProgress').style.display = 'block';
+            document.getElementById('contentArea').style.display = 'grid';
+            document.getElementById('allIssuesCard').style.display = 'block';
+            
+            document.getElementById('totalIssues').textContent = summary.total_issues;
+            document.getElementById('resolvedIssues').textContent = 0;
+            document.getElementById('pendingIssues').textContent = summary.total_issues;
+            document.getElementById('blockedIssues').textContent = 0;
+            
+            document.getElementById('canCloseStatus').innerHTML = summary.can_proceed_to_close ? '✅ Status: Ready to Close' : '⚠️ Status: Issues Pending';
+            document.getElementById('estimatedRemaining').textContent = summary.estimated_resolution_time;
+            document.getElementById('progressPercent').textContent = '0%';
+            document.getElementById('progressFill').style.width = '0%';
+            document.getElementById('progressFill').textContent = '0%';
+            
+            const severityHtml = `<span class="badge badge-critical">🔴 Critical: ${summary.by_severity.CRITICAL || 0}</span>
+                <span class="badge badge-high">🟠 High: ${summary.by_severity.HIGH || 0}</span>
+                <span class="badge badge-medium">🟡 Medium: ${summary.by_severity.MEDIUM || 0}</span>
+                <span class="badge badge-low">🟢 Low: ${summary.by_severity.LOW || 0}</span>`;
+            document.getElementById('severityBadges').innerHTML = severityHtml;
+            
+            renderCategoryBreakdown(summary.by_category);
+            renderPriorityIssues(data.issues);
+            renderAllIssues(data.issues);
+        }
+        
+        function renderCategoryBreakdown(byCategory) {
+            const container = document.getElementById('categoryList');
+            const entries = Object.entries(byCategory).sort((a,b) => b[1] - a[1]);
+            const categoryNames = { 'COST_CENTER': '💰 Cost Centers', 'AR_VARIANCE': '📊 AR/GL Variance', 'INTERCOMPANY': '🔄 Intercompany', 'ACCRUAL': '📅 Accruals', 'BANK_RECONCILIATION': '🏦 Bank Reconciliation', 'BUDGET_VARIANCE': '📈 Budget Variance', 'OVERDUE_INVOICE': '⚠️ Overdue Invoices', 'INVALID_ACCOUNT': '🔢 Invalid Accounts' };
+            let html = '<div style="display: flex; flex-direction: column; gap: 12px;">';
+            for (const [cat, count] of entries) {
+                const displayName = categoryNames[cat] || cat;
+                const percentage = (count / currentIssues.length * 100).toFixed(1);
+                html += `<div><div style="display: flex; justify-content: space-between; margin-bottom: 5px;"><span>${displayName}</span><span>${count} issues (${percentage}%)</span></div>
+                        <div style="background: #e0e0e0; border-radius: 10px; height: 8px; overflow: hidden;"><div style="background: #1a1a2e; width: ${percentage}%; height: 100%; border-radius: 10px;"></div></div></div>`;
+            }
+            html += '</div>';
+            container.innerHTML = html;
+        }
+        
+        function renderPriorityIssues(issues) {
+            const container = document.getElementById('priorityIssues');
+            const priorityIssues = issues.filter(i => i.severity === 'CRITICAL' || i.severity === 'HIGH');
+            if (priorityIssues.length === 0) { container.innerHTML = '<p style="color: #28a745; text-align: center;">✅ No critical or high priority issues!</p>'; return; }
+            let html = '';
+            for (const issue of priorityIssues.slice(0, 10)) {
+                html += `<div class="issue-item" onclick="showIssueDetails('${issue.issue_id}')">
+                    <div class="issue-header"><div class="issue-title"><span class="severity-badge severity-${issue.severity}">${issue.severity}</span><span>${issue.category.replace('_', ' ')}</span></div>
+                    <span class="status-badge status-${issue.status}">${issue.status}</span></div>
+                    <div class="issue-description">${issue.description}</div>
+                    <div class="issue-actions">${issue.status !== 'RESOLVED' ? `<button class="btn-sm btn-resolve" onclick="event.stopPropagation(); resolveIssue('${issue.issue_id}')">✓ Resolve</button>` : '<span style="color: #28a745;">✓ Resolved</span>'}</div>
+                </div>`;
+            }
+            container.innerHTML = html;
+        }
+        
+        function renderAllIssues(issues) {
+            const container = document.getElementById('allIssuesList');
+            const pending = issues.filter(i => i.status === 'PENDING');
+            const resolved = issues.filter(i => i.status === 'RESOLVED');
+            let html = `<div style="margin-bottom: 20px;"><details open><summary style="cursor: pointer; padding: 10px; background: #f8f9fa; border-radius: 8px;"><strong>⏳ Pending (${pending.length})</strong></summary><div style="margin-top: 10px;">`;
+            for (const issue of pending) html += renderIssueItem(issue);
+            if (pending.length === 0) html += '<p style="padding: 15px; color: #28a745;">✓ All pending issues resolved!</p>';
+            html += `</div></details></div><div><details><summary style="cursor: pointer; padding: 10px; background: #f8f9fa; border-radius: 8px;"><strong>✅ Resolved (${resolved.length})</strong></summary><div style="margin-top: 10px;">`;
+            for (const issue of resolved) html += renderIssueItem(issue, true);
+            html += `</div></details></div>`;
+            container.innerHTML = html;
+        }
+        
+        function renderIssueItem(issue, isResolved = false) {
+            return `<div class="issue-item ${isResolved ? 'resolved' : ''}" onclick="showIssueDetails('${issue.issue_id}')">
+                <div class="issue-header"><div class="issue-title"><span class="severity-badge severity-${issue.severity}">${issue.severity}</span><span>${issue.category.replace('_', ' ')}</span></div>
+                <span class="status-badge status-${issue.status}">${issue.status}</span></div>
+                <div class="issue-description">${issue.description}</div>
+                <div class="issue-details"><strong>Suggested Action:</strong> ${issue.suggested_action}</div>
+                <div class="issue-actions">${issue.status !== 'RESOLVED' ? `<button class="btn-sm btn-resolve" onclick="event.stopPropagation(); resolveIssue('${issue.issue_id}')">✓ Mark Resolved</button>` : `<span style="color: #28a745;">✓ Resolved</span>`}</div>
+            </div>`;
+        }
+        
+        function showIssueDetails(issueId) {
+            const issue = currentIssues.find(i => i.issue_id === issueId);
+            if (!issue) return;
+            currentModalIssueId = issueId;
+            document.getElementById('modalTitle').textContent = `${issue.category.replace('_', ' ')} - ${issue.issue_id}`;
+            document.getElementById('modalBody').innerHTML = `<div style="margin-bottom: 20px;">
+                <p><strong>Severity:</strong> <span class="severity-badge severity-${issue.severity}">${issue.severity}</span></p>
+                <p><strong>Status:</strong> <span class="status-badge status-${issue.status}">${issue.status}</span></p>
+                <p><strong>Description:</strong> ${issue.description}</p>
+                <p><strong>Suggested Action:</strong> ${issue.suggested_action}</p>
+                <p><strong>Created:</strong> ${new Date(issue.created_at).toLocaleString()}</p>
+                ${issue.resolved_at ? `<p><strong>Resolved:</strong> ${new Date(issue.resolved_at).toLocaleString()}</p>` : ''}
+            </div>
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 8px;"><strong>📋 Detailed Information:</strong><pre style="margin-top: 10px; font-size: 0.85em; overflow-x: auto;">${JSON.stringify(issue.details, null, 2)}</pre></div>`;
+            document.getElementById('issueModal').style.display = 'block';
+        }
+        
+        async function resolveIssue(issueId) {
+            if (!currentScanId) return;
+            try {
+                const response = await fetch(`/proactive/scan/${currentScanId}/issue/${issueId}/resolve?resolver=Dashboard%20User`, { method: 'POST' });
+                const data = await response.json();
+                if (data.success) {
+                    showToast(`✅ Issue ${issueId} resolved!`, 'success');
+                    const issue = currentIssues.find(i => i.issue_id === issueId);
+                    if (issue) { issue.status = 'RESOLVED'; issue.resolved_at = new Date().toISOString(); }
+                    refreshUIFromLocalData();
+                } else { showToast('❌ Failed to resolve issue', 'error'); }
+            } catch (error) { showToast('❌ Error resolving issue', 'error'); }
+        }
+        
+        function resolveCurrentIssue() { if (currentModalIssueId) { resolveIssue(currentModalIssueId); closeModal(); } }
+        
+        function refreshUIFromLocalData() {
+            const resolved = currentIssues.filter(i => i.status === 'RESOLVED').length;
+            const pending = currentIssues.filter(i => i.status === 'PENDING').length;
+            const progress = (resolved / currentIssues.length * 100).toFixed(1);
+            document.getElementById('resolvedIssues').textContent = resolved;
+            document.getElementById('pendingIssues').textContent = pending;
+            document.getElementById('progressPercent').textContent = `${progress}%`;
+            document.getElementById('progressFill').style.width = `${progress}%`;
+            document.getElementById('progressFill').textContent = `${progress}%`;
+            const criticalRemaining = currentIssues.filter(i => (i.severity === 'CRITICAL' || i.severity === 'HIGH') && i.status !== 'RESOLVED').length;
+            document.getElementById('canCloseStatus').innerHTML = criticalRemaining === 0 ? '✅ Status: Ready to Close' : '⚠️ Status: Issues Pending';
+            renderPriorityIssues(currentIssues);
+            renderAllIssues(currentIssues);
+        }
+        
+        function connectWebSocket(scanId) {
+            if (websocket) websocket.close();
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/proactive/${scanId}`;
+            websocket = new WebSocket(wsUrl);
+            websocket.onopen = () => { document.getElementById('liveIndicator').style.display = 'inline-flex'; };
+            websocket.onmessage = (event) => { const data = JSON.parse(event.data); if (data.total_issues !== undefined) updateProgressFromWebSocket(data); };
+            websocket.onerror = () => { document.getElementById('liveIndicator').style.display = 'none'; };
+            websocket.onclose = () => { document.getElementById('liveIndicator').style.display = 'none'; setTimeout(() => { if (currentScanId) connectWebSocket(currentScanId); }, 5000); };
+        }
+        
+        function updateProgressFromWebSocket(progress) {
+            if (progress.resolved_issues !== undefined) {
+                document.getElementById('resolvedIssues').textContent = progress.resolved_issues;
+                document.getElementById('pendingIssues').textContent = progress.pending_issues;
+                const percent = progress.progress_percentage.toFixed(1);
+                document.getElementById('progressPercent').textContent = `${percent}%`;
+                document.getElementById('progressFill').style.width = `${percent}%`;
+                document.getElementById('progressFill').textContent = `${percent}%`;
+                document.getElementById('estimatedRemaining').textContent = progress.estimated_remaining;
+                if (progress.recent_resolutions && progress.recent_resolutions.length > 0) {
+                    for (const resolution of progress.recent_resolutions) {
+                        const issue = currentIssues.find(i => i.issue_id === resolution.issue_id);
+                        if (issue && issue.status !== 'RESOLVED') { issue.status = 'RESOLVED'; issue.resolved_at = resolution.timestamp; }
+                    }
+                    refreshUIFromLocalData();
+                }
+            }
+        }
+        
+        function showToast(message, type = 'info') {
+            const toast = document.createElement('div');
+            toast.className = 'toast';
+            toast.style.backgroundColor = type === 'success' ? '#28a745' : type === 'error' ? '#dc3545' : '#1a1a2e';
+            toast.textContent = message;
+            document.getElementById('toastContainer').appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+        
+        function closeModal() { document.getElementById('issueModal').style.display = 'none'; currentModalIssueId = null; }
+        window.onclick = function(event) { if (event.target === document.getElementById('issueModal')) closeModal(); }
+    </script>
+</body>
+</html>
+    """
+
+
+# ============================================================================
+# ADD A LINK TO THE PROACTIVE DASHBOARD IN THE ROOT PAGE
+# ============================================================================
+# Update the root page to include a link to the proactive dashboard
+# Add this to your existing root() function or create a new endpoint
+
+@app.get("/proactive")
+async def proactive_redirect():
+    """Redirect to proactive dashboard"""
+    return RedirectResponse(url="/proactive/dashboard")
 
 
 # ============================================================================
