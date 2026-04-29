@@ -1032,94 +1032,136 @@ def create_approval_item(
 # PROACTIVE DASHBOARD SYNC FUNCTION - ADD THIS AFTER create_approval_item
 # ============================================================================
 
+# ============================================================================
+# IMPROVED PROACTIVE DASHBOARD SYNC FUNCTION - REPLACE THE EXISTING ONE
+# ============================================================================
+
 def sync_proactive_issue_from_approval(approval_item: ApprovalItem, decision: str, reviewer: str):
     """
     When an approval is processed, update the corresponding proactive issue in active scans
     """
     if not hasattr(approval_item, 'metadata') or not approval_item.metadata:
+        logger.warning(f"Cannot sync: No metadata in approval item {approval_item.token}")
         return
     
     fiscal_period = approval_item.metadata.get('fiscal_period', '2026-03')
     item_type = approval_item.type
     
-    # Map approval type to proactive issue category
-    type_to_category = {
-        "Intercompany Variance": ProactiveIssueCategory.INTERCOMPANY,
-        "Accrual Variance": ProactiveIssueCategory.ACCRUAL,
-        "Bank Reconciliation": ProactiveIssueCategory.BANK_RECONCILIATION,
-        "Overdue Invoice": ProactiveIssueCategory.OVERDUE_INVOICE,
-        "Missing Cost Center": ProactiveIssueCategory.COST_CENTER,
-        "AR Variance Correction": ProactiveIssueCategory.AR_VARIANCE,
-        "Budget Variance": ProactiveIssueCategory.BUDGET_VARIANCE,
-    }
+    logger.info(f"🔄 Syncing approval {item_type} (Token: {approval_item.token[:8]}) to proactive dashboard for period {fiscal_period}")
     
-    category = type_to_category.get(item_type)
-    if not category:
+    # If no active scans exist, nothing to sync
+    if not proactive_engine.active_scans:
+        logger.info(f"No active scans to sync with")
         return
     
-    # Find the corresponding issue in active scans and mark as resolved
+    # Track if we found and updated any issue
+    updated = False
+    
+    # Find the corresponding issue in active scans
     for scan_id, scan_result in proactive_engine.active_scans.items():
         if scan_result.fiscal_period != fiscal_period:
             continue
         
+        logger.info(f"Checking scan {scan_id} with {len(scan_result.issues)} issues")
+        
         for issue in scan_result.issues:
-            if issue.category == category and issue.status != ProactiveIssueStatus.RESOLVED:
-                # Match by different criteria based on type
-                matched = False
-                
-                if item_type == "Intercompany Variance":
-                    if approval_item.metadata and 'entity_pair' in approval_item.metadata:
-                        if approval_item.metadata['entity_pair'] in issue.description:
-                            matched = True
-                elif item_type == "Accrual Variance":
-                    if approval_item.metadata and 'accrual_id' in approval_item.metadata:
-                        if str(approval_item.metadata['accrual_id']) in issue.issue_id:
-                            matched = True
-                elif item_type == "Bank Reconciliation":
-                    if approval_item.metadata and 'item_id' in approval_item.metadata:
-                        if str(approval_item.metadata['item_id']) in issue.issue_id:
-                            matched = True
-                elif item_type == "Overdue Invoice":
-                    if approval_item.metadata and 'invoice_number' in approval_item.metadata:
-                        if approval_item.metadata['invoice_number'] in issue.description or approval_item.metadata['invoice_number'] in issue.issue_id:
-                            matched = True
-                elif item_type == "Missing Cost Center":
-                    if approval_item.metadata and 'transaction_id' in approval_item.metadata:
-                        if approval_item.metadata['transaction_id'] in issue.issue_id:
-                            matched = True
-                elif item_type == "AR Variance Correction":
-                    if "AR/GL Variance" in issue.description or "AR_VAR" in issue.issue_id:
+            if issue.status == ProactiveIssueStatus.RESOLVED:
+                continue
+            
+            # Try to match based on issue category and content
+            matched = False
+            
+            # Match by category first
+            if item_type == "Intercompany Variance" and issue.category == ProactiveIssueCategory.INTERCOMPANY:
+                # Check if entity pair matches
+                if approval_item.metadata and 'entity_pair' in approval_item.metadata:
+                    entity_pair = approval_item.metadata['entity_pair']
+                    if entity_pair in issue.description or entity_pair in issue.issue_id:
                         matched = True
-                else:
-                    # Fallback: check if approval description is in issue description
-                    if approval_item.description[:50] in issue.description or issue.description[:50] in approval_item.description:
+                        logger.info(f"✅ Matched Intercompany issue {issue.issue_id} with entity pair {entity_pair}")
+                # Fallback: check if approval token is in issue
+                elif approval_item.token in issue.issue_id or issue.approval_token == approval_item.token:
+                    matched = True
+            
+            elif item_type == "Accrual Variance" and issue.category == ProactiveIssueCategory.ACCRUAL:
+                if approval_item.metadata and 'accrual_id' in approval_item.metadata:
+                    accrual_id = str(approval_item.metadata['accrual_id'])
+                    if accrual_id in issue.issue_id or accrual_id in issue.description:
                         matched = True
+                        logger.info(f"✅ Matched Accrual issue {issue.issue_id} with accrual_id {accrual_id}")
+                elif approval_item.token in issue.issue_id or issue.approval_token == approval_item.token:
+                    matched = True
+            
+            elif item_type == "Bank Reconciliation" and issue.category == ProactiveIssueCategory.BANK_RECONCILIATION:
+                if approval_item.metadata and 'item_id' in approval_item.metadata:
+                    item_id = str(approval_item.metadata['item_id'])
+                    if item_id in issue.issue_id or item_id in issue.description:
+                        matched = True
+                        logger.info(f"✅ Matched Bank issue {issue.issue_id} with item_id {item_id}")
+                elif approval_item.token in issue.issue_id or issue.approval_token == approval_item.token:
+                    matched = True
+            
+            elif item_type == "Overdue Invoice" and issue.category == ProactiveIssueCategory.OVERDUE_INVOICE:
+                if approval_item.metadata and 'invoice_number' in approval_item.metadata:
+                    invoice_number = str(approval_item.metadata['invoice_number'])
+                    if invoice_number in issue.issue_id or invoice_number in issue.description:
+                        matched = True
+                        logger.info(f"✅ Matched Overdue Invoice issue {issue.issue_id} with invoice {invoice_number}")
+                elif approval_item.token in issue.issue_id or issue.approval_token == approval_item.token:
+                    matched = True
+            
+            elif item_type == "Missing Cost Center" and issue.category == ProactiveIssueCategory.COST_CENTER:
+                if approval_item.metadata and 'transaction_id' in approval_item.metadata:
+                    txn_id = str(approval_item.metadata['transaction_id'])
+                    if txn_id in issue.issue_id or txn_id in issue.description:
+                        matched = True
+                        logger.info(f"✅ Matched Cost Center issue {issue.issue_id} with transaction {txn_id}")
+            
+            elif item_type == "AR Variance Correction" and issue.category == ProactiveIssueCategory.AR_VARIANCE:
+                matched = True
+                logger.info(f"✅ Matched AR Variance issue {issue.issue_id}")
+            
+            # Also try to match by approval_token if stored in issue
+            elif issue.approval_token and issue.approval_token == approval_item.token:
+                matched = True
+                logger.info(f"✅ Matched issue {issue.issue_id} by approval_token")
+            
+            if matched:
+                old_status = issue.status
+                issue.status = ProactiveIssueStatus.RESOLVED
+                issue.resolved_at = datetime.now()
                 
-                if matched:
-                    old_status = issue.status
-                    issue.status = ProactiveIssueStatus.RESOLVED
-                    issue.resolved_at = datetime.now()
-                    
-                    # Record the update
-                    if scan_id not in proactive_engine.issue_status_updates:
-                        proactive_engine.issue_status_updates[scan_id] = []
-                    proactive_engine.issue_status_updates[scan_id].append({
-                        "issue_id": issue.issue_id,
-                        "old_status": old_status.value,
-                        "new_status": ProactiveIssueStatus.RESOLVED.value,
-                        "resolver": reviewer,
-                        "timestamp": datetime.now().isoformat(),
-                        "approval_token": approval_item.token
-                    })
-                    
-                    logger.info(f"✅ Synced: {item_type} approval marked proactive issue {issue.issue_id} as RESOLVED")
-                    
-                    # Broadcast update via WebSocket
-                    import asyncio
-                    progress = proactive_engine.get_progress_update(scan_id)
-                    if progress:
-                        asyncio.create_task(proactive_engine.ws_manager.broadcast_progress(scan_id, progress))
-                    break
+                # Record the update
+                if scan_id not in proactive_engine.issue_status_updates:
+                    proactive_engine.issue_status_updates[scan_id] = []
+                proactive_engine.issue_status_updates[scan_id].append({
+                    "issue_id": issue.issue_id,
+                    "old_status": old_status.value,
+                    "new_status": ProactiveIssueStatus.RESOLVED.value,
+                    "resolver": reviewer,
+                    "timestamp": datetime.now().isoformat(),
+                    "approval_token": approval_item.token,
+                    "decision": decision
+                })
+                
+                updated = True
+                logger.info(f"✅ SYNCED: {item_type} approval marked proactive issue {issue.issue_id} as RESOLVED")
+                
+                # Broadcast update via WebSocket
+                import asyncio
+                progress = proactive_engine.get_progress_update(scan_id)
+                if progress:
+                    asyncio.create_task(proactive_engine.ws_manager.broadcast_progress(scan_id, progress))
+                break
+        
+        if updated:
+            break
+    
+    if not updated:
+        logger.warning(f"⚠️ Could not find matching proactive issue for {item_type} approval {approval_item.token[:8]}")
+        logger.info(f"   Active scans: {list(proactive_engine.active_scans.keys())}")
+        logger.info(f"   Fiscal period: {fiscal_period}")
+        logger.info(f"   Issue categories in scan: {[i.category.value for i in scan_result.issues] if scan_result else 'None'}")
 
 def get_approval_links(token: str) -> Dict[str, str]:
     """Generate approval links for dashboard"""
