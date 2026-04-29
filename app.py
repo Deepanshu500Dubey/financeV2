@@ -530,11 +530,16 @@ class ProactiveScanEngine:
                     total_variance = sum(abs(float(r.get('Variance_AUD', 0))) for r in material)
                     
                     for r in material[:3]:
+                        entity_pair = f"{r.get('Entity')} ↔ {r.get('Counterparty_Entity')}"
                         approval_item = create_approval_item(
                             item_type="Intercompany Variance",
-                            description=f"{r.get('Entity')} ↔ {r.get('Counterparty_Entity')} - {r.get('Root_Cause', 'Variance')}",
+                            description=f"{entity_pair} - {r.get('Root_Cause', 'Variance')}",
                             amount=abs(float(r.get('Variance_AUD', 0))),
-                            metadata={"entity_pair": f"{r.get('Entity')} ↔ {r.get('Counterparty_Entity')}"},
+                            metadata={
+                                "entity_pair": entity_pair,
+                                "fiscal_period": fiscal_period,
+                                "proactive_issue_id": f"IC_VAR_{fiscal_period}"  # DIRECT LINK
+                            },
                             fiscal_period=fiscal_period
                         )
                     
@@ -562,6 +567,24 @@ class ProactiveScanEngine:
                 
                 if material:
                     total_variance = sum(abs(float(a.get('Variance', 0))) for a in material)
+                    
+                    # CREATE APPROVAL ITEMS (this was missing)
+                    for a in material[:3]:
+                        approval_item = create_approval_item(
+                            item_type="Accrual Variance",
+                            description=f"{a.get('Description', 'Accrual')} - Variance: ${abs(float(a.get('Variance', 0))):,.2f}",
+                            amount=abs(float(a.get('Variance', 0))),
+                            account=a.get('Account_Code', ''),
+                            cost_center="CORP",
+                            metadata={
+                                "accrual_id": a.get('Accrual_ID'),
+                                "variance_reason": a.get('Variance_Reason', ''),
+                                "fiscal_period": fiscal_period,
+                                "proactive_issue_id": f"ACC_VAR_{fiscal_period}"  # DIRECT LINK
+                            },
+                            fiscal_period=fiscal_period
+                        )
+                    
                     issues.append(ProactiveIssue(
                         issue_id=f"ACC_VAR_{fiscal_period}",
                         category=ProactiveIssueCategory.ACCRUAL,
@@ -573,7 +596,8 @@ class ProactiveScanEngine:
         except Exception as e:
             logger.error(f"Error scanning accruals: {e}")
         return issues
-    
+
+
     async def _scan_bank_issues(self, fiscal_period: str) -> List[ProactiveIssue]:
         issues = []
         try:
@@ -585,6 +609,24 @@ class ProactiveScanEngine:
                 
                 if unreconciled:
                     total_variance = sum(abs(float(g.get('Variance_AUD', 0))) for g in unreconciled)
+                    
+                    # CREATE APPROVAL ITEMS (this was missing)
+                    for account in unreconciled[:3]:
+                        approval_item = create_approval_item(
+                            item_type="Bank Reconciliation",
+                            description=f"Unreconciled: {account.get('Bank_Name')} - Variance: ${abs(float(account.get('Variance_AUD', 0))):,.2f}",
+                            amount=abs(float(account.get('Variance_AUD', 0))),
+                            account="1010",
+                            cost_center="CORP",
+                            metadata={
+                                "account_number": account.get('Account_Number'),
+                                "bank_name": account.get('Bank_Name'),
+                                "fiscal_period": fiscal_period,
+                                "proactive_issue_id": f"BANK_UNREC_{fiscal_period}"  # DIRECT LINK
+                            },
+                            fiscal_period=fiscal_period
+                        )
+                    
                     issues.append(ProactiveIssue(
                         issue_id=f"BANK_UNREC_{fiscal_period}",
                         category=ProactiveIssueCategory.BANK_RECONCILIATION,
@@ -1049,15 +1091,15 @@ def sync_proactive_issue_from_approval(approval_item: ApprovalItem, decision: st
     
     logger.info(f"🔄 Syncing approval {item_type} (Token: {approval_item.token[:8]}) to proactive dashboard for period {fiscal_period}")
     
-    # If no active scans exist, nothing to sync
     if not proactive_engine.active_scans:
         logger.info(f"No active scans to sync with")
         return
     
-    # Track if we found and updated any issue
     updated = False
     
-    # Find the corresponding issue in active scans
+    # DETERMINISTIC MATCHING using proactive_issue_id in metadata
+    proactive_issue_id = approval_item.metadata.get('proactive_issue_id')
+    
     for scan_id, scan_result in proactive_engine.active_scans.items():
         if scan_result.fiscal_period != fiscal_period:
             continue
@@ -1068,70 +1110,32 @@ def sync_proactive_issue_from_approval(approval_item: ApprovalItem, decision: st
             if issue.status == ProactiveIssueStatus.RESOLVED:
                 continue
             
-            # Try to match based on issue category and content
-            matched = False
-            
-            # Match by category first
-            if item_type == "Intercompany Variance" and issue.category == ProactiveIssueCategory.INTERCOMPANY:
-                # Check if entity pair matches
-                if approval_item.metadata and 'entity_pair' in approval_item.metadata:
-                    entity_pair = approval_item.metadata['entity_pair']
-                    if entity_pair in issue.description or entity_pair in issue.issue_id:
-                        matched = True
-                        logger.info(f"✅ Matched Intercompany issue {issue.issue_id} with entity pair {entity_pair}")
-                # Fallback: check if approval token is in issue
-                elif approval_item.token in issue.issue_id or issue.approval_token == approval_item.token:
-                    matched = True
-            
-            elif item_type == "Accrual Variance" and issue.category == ProactiveIssueCategory.ACCRUAL:
-                if approval_item.metadata and 'accrual_id' in approval_item.metadata:
-                    accrual_id = str(approval_item.metadata['accrual_id'])
-                    if accrual_id in issue.issue_id or accrual_id in issue.description:
-                        matched = True
-                        logger.info(f"✅ Matched Accrual issue {issue.issue_id} with accrual_id {accrual_id}")
-                elif approval_item.token in issue.issue_id or issue.approval_token == approval_item.token:
-                    matched = True
-            
-            elif item_type == "Bank Reconciliation" and issue.category == ProactiveIssueCategory.BANK_RECONCILIATION:
-                if approval_item.metadata and 'item_id' in approval_item.metadata:
-                    item_id = str(approval_item.metadata['item_id'])
-                    if item_id in issue.issue_id or item_id in issue.description:
-                        matched = True
-                        logger.info(f"✅ Matched Bank issue {issue.issue_id} with item_id {item_id}")
-                elif approval_item.token in issue.issue_id or issue.approval_token == approval_item.token:
-                    matched = True
-            
-            elif item_type == "Overdue Invoice" and issue.category == ProactiveIssueCategory.OVERDUE_INVOICE:
-                if approval_item.metadata and 'invoice_number' in approval_item.metadata:
-                    invoice_number = str(approval_item.metadata['invoice_number'])
-                    if invoice_number in issue.issue_id or invoice_number in issue.description:
-                        matched = True
-                        logger.info(f"✅ Matched Overdue Invoice issue {issue.issue_id} with invoice {invoice_number}")
-                elif approval_item.token in issue.issue_id or issue.approval_token == approval_item.token:
-                    matched = True
-            
-            elif item_type == "Missing Cost Center" and issue.category == ProactiveIssueCategory.COST_CENTER:
-                if approval_item.metadata and 'transaction_id' in approval_item.metadata:
-                    txn_id = str(approval_item.metadata['transaction_id'])
-                    if txn_id in issue.issue_id or txn_id in issue.description:
-                        matched = True
-                        logger.info(f"✅ Matched Cost Center issue {issue.issue_id} with transaction {txn_id}")
-            
-            elif item_type == "AR Variance Correction" and issue.category == ProactiveIssueCategory.AR_VARIANCE:
+            # PRIMARY MATCH: Direct issue ID reference
+            if proactive_issue_id and issue.issue_id == proactive_issue_id:
                 matched = True
-                logger.info(f"✅ Matched AR Variance issue {issue.issue_id}")
+                logger.info(f"✅ Matched issue {issue.issue_id} by direct proactive_issue_id reference")
             
-            # Also try to match by approval_token if stored in issue
-            elif issue.approval_token and issue.approval_token == approval_item.token:
-                matched = True
-                logger.info(f"✅ Matched issue {issue.issue_id} by approval_token")
+            # FALLBACK MATCH: For backward compatibility with existing Cost Center and AR Variance
+            elif not matched:
+                # Cost Center matching (preserves existing working logic)
+                if item_type == "Missing Cost Center" and issue.category == ProactiveIssueCategory.COST_CENTER:
+                    if approval_item.metadata and 'transaction_id' in approval_item.metadata:
+                        txn_id = str(approval_item.metadata['transaction_id'])
+                        if txn_id in issue.issue_id or txn_id in issue.description:
+                            matched = True
+                            logger.info(f"✅ Matched Cost Center issue {issue.issue_id} by transaction_id")
+                
+                # AR Variance matching (preserves existing working logic)
+                elif item_type == "AR Variance Correction" and issue.category == ProactiveIssueCategory.AR_VARIANCE:
+                    matched = True
+                    logger.info(f"✅ Matched AR Variance issue {issue.issue_id} by type")
             
             if matched:
                 old_status = issue.status
                 issue.status = ProactiveIssueStatus.RESOLVED
                 issue.resolved_at = datetime.now()
                 
-                # Record the update
+                # Record update
                 if scan_id not in proactive_engine.issue_status_updates:
                     proactive_engine.issue_status_updates[scan_id] = []
                 proactive_engine.issue_status_updates[scan_id].append({
@@ -1159,9 +1163,8 @@ def sync_proactive_issue_from_approval(approval_item: ApprovalItem, decision: st
     
     if not updated:
         logger.warning(f"⚠️ Could not find matching proactive issue for {item_type} approval {approval_item.token[:8]}")
-        logger.info(f"   Active scans: {list(proactive_engine.active_scans.keys())}")
-        logger.info(f"   Fiscal period: {fiscal_period}")
-        logger.info(f"   Issue categories in scan: {[i.category.value for i in scan_result.issues] if scan_result else 'None'}")
+        logger.warning(f"   Expected proactive_issue_id: {proactive_issue_id}")
+        logger.warning(f"   Active scan fiscal periods: {[s.fiscal_period for s in proactive_engine.active_scans.values()]}")
 
 def get_approval_links(token: str) -> Dict[str, str]:
     """Generate approval links for dashboard"""
