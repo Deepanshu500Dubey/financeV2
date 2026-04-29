@@ -1110,13 +1110,15 @@ def sync_proactive_issue_from_approval(approval_item: ApprovalItem, decision: st
             if issue.status == ProactiveIssueStatus.RESOLVED:
                 continue
             
+            matched = False  # ✅ INITIALIZE matched HERE before any conditional checks
+            
             # PRIMARY MATCH: Direct issue ID reference
             if proactive_issue_id and issue.issue_id == proactive_issue_id:
                 matched = True
                 logger.info(f"✅ Matched issue {issue.issue_id} by direct proactive_issue_id reference")
             
             # FALLBACK MATCH: For backward compatibility with existing Cost Center and AR Variance
-            elif not matched:
+            if not matched:  # ✅ Now safely check without elif
                 # Cost Center matching (preserves existing working logic)
                 if item_type == "Missing Cost Center" and issue.category == ProactiveIssueCategory.COST_CENTER:
                     if approval_item.metadata and 'transaction_id' in approval_item.metadata:
@@ -1129,6 +1131,34 @@ def sync_proactive_issue_from_approval(approval_item: ApprovalItem, decision: st
                 elif item_type == "AR Variance Correction" and issue.category == ProactiveIssueCategory.AR_VARIANCE:
                     matched = True
                     logger.info(f"✅ Matched AR Variance issue {issue.issue_id} by type")
+                
+                # Intercompany matching (new deterministic path)
+                elif item_type == "Intercompany Variance" and issue.category == ProactiveIssueCategory.INTERCOMPANY:
+                    if approval_item.metadata and 'entity_pair' in approval_item.metadata:
+                        entity_pair = approval_item.metadata['entity_pair']
+                        if entity_pair in issue.description or entity_pair in issue.issue_id:
+                            matched = True
+                            logger.info(f"✅ Matched Intercompany issue {issue.issue_id} by entity_pair")
+                
+                # Accrual matching (new)
+                elif item_type == "Accrual Variance" and issue.category == ProactiveIssueCategory.ACCRUAL:
+                    matched = True
+                    logger.info(f"✅ Matched Accrual issue {issue.issue_id} by type")
+                
+                # Bank Reconciliation matching (new)
+                elif item_type == "Bank Reconciliation" and issue.category == ProactiveIssueCategory.BANK_RECONCILIATION:
+                    matched = True
+                    logger.info(f"✅ Matched Bank Reconciliation issue {issue.issue_id} by type")
+                
+                # Overdue Invoice matching
+                elif item_type == "Overdue Invoice" and issue.category == ProactiveIssueCategory.OVERDUE_INVOICE:
+                    matched = True
+                    logger.info(f"✅ Matched Overdue Invoice issue {issue.issue_id} by type")
+                
+                # Budget Variance matching
+                elif item_type == "Budget Variance" and issue.category == ProactiveIssueCategory.BUDGET_VARIANCE:
+                    matched = True
+                    logger.info(f"✅ Matched Budget Variance issue {issue.issue_id} by type")
             
             if matched:
                 old_status = issue.status
@@ -1153,9 +1183,13 @@ def sync_proactive_issue_from_approval(approval_item: ApprovalItem, decision: st
                 
                 # Broadcast update via WebSocket
                 import asyncio
-                progress = proactive_engine.get_progress_update(scan_id)
-                if progress:
-                    asyncio.create_task(proactive_engine.ws_manager.broadcast_progress(scan_id, progress))
+                try:
+                    progress = proactive_engine.get_progress_update(scan_id)
+                    if progress:
+                        asyncio.create_task(proactive_engine.ws_manager.broadcast_progress(scan_id, progress))
+                except RuntimeError:
+                    # Handle case where event loop is not running
+                    logger.warning("Could not broadcast WebSocket update (no event loop)")
                 break
         
         if updated:
@@ -1163,7 +1197,8 @@ def sync_proactive_issue_from_approval(approval_item: ApprovalItem, decision: st
     
     if not updated:
         logger.warning(f"⚠️ Could not find matching proactive issue for {item_type} approval {approval_item.token[:8]}")
-        logger.warning(f"   Expected proactive_issue_id: {proactive_issue_id}")
+        if proactive_issue_id:
+            logger.warning(f"   Expected proactive_issue_id: {proactive_issue_id}")
         logger.warning(f"   Active scan fiscal periods: {[s.fiscal_period for s in proactive_engine.active_scans.values()]}")
 
 def get_approval_links(token: str) -> Dict[str, str]:
