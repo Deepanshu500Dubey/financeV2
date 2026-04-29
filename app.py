@@ -1025,6 +1025,99 @@ def create_approval_item(
     logger.info(f"Created approval item: {item_type} - {item_id} (Token: {token}) for period {fiscal_period}")
     return item
 
+# ============================================================================
+# PROACTIVE DASHBOARD SYNC FUNCTION - ADD THIS AFTER create_approval_item
+# ============================================================================
+
+def sync_proactive_issue_from_approval(approval_item: ApprovalItem, decision: str, reviewer: str):
+    """
+    When an approval is processed, update the corresponding proactive issue in active scans
+    """
+    if not hasattr(approval_item, 'metadata') or not approval_item.metadata:
+        return
+    
+    fiscal_period = approval_item.metadata.get('fiscal_period', '2026-03')
+    item_type = approval_item.type
+    
+    # Map approval type to proactive issue category
+    type_to_category = {
+        "Intercompany Variance": ProactiveIssueCategory.INTERCOMPANY,
+        "Accrual Variance": ProactiveIssueCategory.ACCRUAL,
+        "Bank Reconciliation": ProactiveIssueCategory.BANK_RECONCILIATION,
+        "Overdue Invoice": ProactiveIssueCategory.OVERDUE_INVOICE,
+        "Missing Cost Center": ProactiveIssueCategory.COST_CENTER,
+        "AR Variance Correction": ProactiveIssueCategory.AR_VARIANCE,
+        "Budget Variance": ProactiveIssueCategory.BUDGET_VARIANCE,
+    }
+    
+    category = type_to_category.get(item_type)
+    if not category:
+        return
+    
+    # Find the corresponding issue in active scans and mark as resolved
+    for scan_id, scan_result in proactive_engine.active_scans.items():
+        if scan_result.fiscal_period != fiscal_period:
+            continue
+        
+        for issue in scan_result.issues:
+            if issue.category == category and issue.status != ProactiveIssueStatus.RESOLVED:
+                # Match by different criteria based on type
+                matched = False
+                
+                if item_type == "Intercompany Variance":
+                    if approval_item.metadata and 'entity_pair' in approval_item.metadata:
+                        if approval_item.metadata['entity_pair'] in issue.description:
+                            matched = True
+                elif item_type == "Accrual Variance":
+                    if approval_item.metadata and 'accrual_id' in approval_item.metadata:
+                        if str(approval_item.metadata['accrual_id']) in issue.issue_id:
+                            matched = True
+                elif item_type == "Bank Reconciliation":
+                    if approval_item.metadata and 'item_id' in approval_item.metadata:
+                        if str(approval_item.metadata['item_id']) in issue.issue_id:
+                            matched = True
+                elif item_type == "Overdue Invoice":
+                    if approval_item.metadata and 'invoice_number' in approval_item.metadata:
+                        if approval_item.metadata['invoice_number'] in issue.description or approval_item.metadata['invoice_number'] in issue.issue_id:
+                            matched = True
+                elif item_type == "Missing Cost Center":
+                    if approval_item.metadata and 'transaction_id' in approval_item.metadata:
+                        if approval_item.metadata['transaction_id'] in issue.issue_id:
+                            matched = True
+                elif item_type == "AR Variance Correction":
+                    if "AR/GL Variance" in issue.description or "AR_VAR" in issue.issue_id:
+                        matched = True
+                else:
+                    # Fallback: check if approval description is in issue description
+                    if approval_item.description[:50] in issue.description or issue.description[:50] in approval_item.description:
+                        matched = True
+                
+                if matched:
+                    old_status = issue.status
+                    issue.status = ProactiveIssueStatus.RESOLVED
+                    issue.resolved_at = datetime.now()
+                    
+                    # Record the update
+                    if scan_id not in proactive_engine.issue_status_updates:
+                        proactive_engine.issue_status_updates[scan_id] = []
+                    proactive_engine.issue_status_updates[scan_id].append({
+                        "issue_id": issue.issue_id,
+                        "old_status": old_status.value,
+                        "new_status": ProactiveIssueStatus.RESOLVED.value,
+                        "resolver": reviewer,
+                        "timestamp": datetime.now().isoformat(),
+                        "approval_token": approval_item.token
+                    })
+                    
+                    logger.info(f"✅ Synced: {item_type} approval marked proactive issue {issue.issue_id} as RESOLVED")
+                    
+                    # Broadcast update via WebSocket
+                    import asyncio
+                    progress = proactive_engine.get_progress_update(scan_id)
+                    if progress:
+                        asyncio.create_task(proactive_engine.ws_manager.broadcast_progress(scan_id, progress))
+                    break
+
 def get_approval_links(token: str) -> Dict[str, str]:
     """Generate approval links for dashboard"""
     return {
@@ -2190,6 +2283,8 @@ def root():
                     <a href="/dashboard" class="link">📊 Approval Dashboard</a>
                     <a href="/cfo/financial_dashboard" class="link">💰 CFO Dashboard</a>
                     <a href="/reports/email/preview" class="link">📧 Email Reports</a>
+                    <a href="/proactive/dashboard" class="link">🔍 Proactive Dashboard</a>
+                    <a href="/proactive/status" class="link">📊 Proactive Status</a>
                     <a href="/docs" class="link">📚 API Documentation</a>
                     <a href="/health" class="link">🔍 Health Check</a>
                     <a href="/approvals/history" class="link">📋 Approval History</a>
@@ -3647,6 +3742,9 @@ async def decide_approval(
         decision='approved' if approved else 'rejected'
     )
 
+    # ✅ ADD THIS LINE RIGHT HERE - Sync with proactive dashboard
+    sync_proactive_issue_from_approval(item, 'approved' if approved else 'rejected', reviewer)
+
     # ✅ ADD THIS LINE HERE - Update progress milestones after approval
     update_progress_from_approvals()
     
@@ -3738,6 +3836,9 @@ async def batch_approve(request: ApprovalBatchRequest):
                 item.status.value,
                 decision='approved' if request.approved else 'rejected'
             )
+
+            # ✅ ADD THIS LINE RIGHT HERE - Sync with proactive dashboard
+            sync_proactive_issue_from_approval(item, 'approved' if request.approved else 'rejected', request.reviewer)
             
             del pending_approvals[token]
             results.append({"token": token, "status": "success", "decision": request.approved})
@@ -3801,6 +3902,9 @@ async def approve_all_pending(
                 item.status.value,
                 decision='approved'
             )
+            
+            # ✅ ADD THIS LINE RIGHT HERE - Sync with proactive dashboard
+            sync_proactive_issue_from_approval(item, 'approved', reviewer)
             
             del pending_approvals[token]
             results.append({"token": token, "status": "success"})
@@ -3866,6 +3970,9 @@ async def reject_all_pending(
                 decision='rejected'
             )
             
+            # ✅ ADD THIS LINE RIGHT HERE - Sync with proactive dashboard
+            sync_proactive_issue_from_approval(item, 'rejected', reviewer)
+
             del pending_approvals[token]
             results.append({"token": token, "status": "success"})
     
@@ -9666,6 +9773,32 @@ def get_proactive_dashboard_html() -> str:
 async def proactive_redirect():
     """Redirect to proactive dashboard"""
     return RedirectResponse(url="/proactive/dashboard")
+
+
+# ============================================================================
+# PROACTIVE STATUS CHECK ENDPOINT - ADD THIS
+# ============================================================================
+
+@app.get("/proactive/status")
+async def get_proactive_status():
+    """Get status of all proactive scans and issue resolutions"""
+    active_scans_summary = {}
+    for scan_id, scan in proactive_engine.active_scans.items():
+        resolved = sum(1 for i in scan.issues if i.status == ProactiveIssueStatus.RESOLVED)
+        active_scans_summary[scan_id] = {
+            "fiscal_period": scan.fiscal_period,
+            "total_issues": scan.total_issues,
+            "resolved": resolved,
+            "pending": scan.total_issues - resolved,
+            "progress": (resolved / scan.total_issues * 100) if scan.total_issues > 0 else 100,
+            "issues_by_status": scan.issues_by_status
+        }
+    
+    return {
+        "active_scans": active_scans_summary,
+        "total_scans": len(proactive_engine.active_scans),
+        "pending_approvals_in_registry": len([a for a in approval_registry.generated_approvals.values() if a.get('status') == 'PENDING'])
+    }
 
 
 # ============================================================================
