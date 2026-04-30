@@ -8137,861 +8137,1075 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-04")):
     milestone_summary = analysis.get('milestone_summary', {})
     milestones = milestone_summary.get('milestones', {})
     
-    # Generate initial milestone HTML
-    milestone_html = _render_milestones_with_progress_html(milestones)
+    # Generate initial milestone HTML with single-line layout
+    milestone_cards_html = _render_milestones_single_line_html(milestones)
     
     html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Close Progress Dashboard - {fiscal_period}</title>
-        <style>
-            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-            
-            body {{
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                background: #f5f5f5;
-                padding: 20px;
-            }}
-            
-            .dashboard-container {{
-                max-width: 1400px;
-                margin: 0 auto;
-            }}
-            
-            /* Header */
-            .dashboard-header {{
-                background: #000000;
-                color: white;
-                padding: 25px 30px;
-                border-radius: 15px;
-                margin-bottom: 25px;
-                display: flex;
-                align-items: center;
-                gap: 25px;
-                flex-wrap: wrap;
-            }}
-            
-            .header-logo {{
-                height: 50px;
-            }}
-            
-            .header-title {{
-                flex-grow: 1;
-            }}
-            
-            .header-title h1 {{
-                font-size: 1.8em;
-                margin-bottom: 5px;
-            }}
-            
-            .header-title p {{
-                opacity: 0.8;
-            }}
-            
-            .period-selector {{
-                display: flex;
-                gap: 10px;
-                align-items: center;
-            }}
-            
-            .period-selector select {{
-                padding: 10px 15px;
-                border-radius: 8px;
-                border: none;
-                font-size: 1em;
-                background: #333;
-                color: white;
-            }}
-            
-            .period-selector button {{
-                padding: 10px 20px;
-                background: #333;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                cursor: pointer;
-                transition: background 0.3s;
-            }}
-            
-            .period-selector button:hover {{
-                background: #555;
-            }}
-            
-            .refresh-btn {{
-                background: #333;
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                border-radius: 8px;
-                cursor: pointer;
-                font-size: 1em;
-                transition: background 0.3s;
-            }}
-            
-            .refresh-btn:hover {{
-                background: #555;
-            }}
-            
-            /* Current Stage Indicator */
-            .stage-indicator-container {{
-                background: white;
-                border-radius: 15px;
-                padding: 20px 25px;
-                margin-bottom: 25px;
-                box-shadow: 0 5px 15px rgba(0,0,0,0.08);
-                display: flex;
-                align-items: center;
-                gap: 20px;
-                border-left: 6px solid {status_color};
-            }}
-            
-            .stage-indicator-icon {{
-                font-size: 2.5em;
-                min-width: 60px;
-                text-align: center;
-            }}
-            
-            .stage-indicator-content {{
-                flex-grow: 1;
-            }}
-            
-            .stage-indicator-label {{
-                font-size: 0.85em;
-                color: #666;
-                text-transform: uppercase;
-                letter-spacing: 1px;
-                margin-bottom: 5px;
-            }}
-            
-            .stage-indicator-name {{
-                font-size: 1.4em;
-                font-weight: bold;
-                color: #000000;
-            }}
-            
-            .stage-indicator-status {{
-                display: inline-block;
-                padding: 4px 12px;
-                border-radius: 20px;
-                font-size: 0.85em;
-                font-weight: 500;
-                margin-top: 5px;
-            }}
-            
-            .stage-status-completed {{
-                background: #000000;
-                color: white;
-            }}
-            
-            .stage-status-in-progress {{
-                background: #333333;
-                color: white;
-            }}
-            
-            .stage-status-not-started {{
-                background: #e0e0e0;
-                color: #666;
-            }}
-            
-            .stage-progress-bar {{
-                width: 150px;
-                background: #e0e0e0;
-                border-radius: 10px;
-                height: 8px;
-                overflow: hidden;
-            }}
-            
-            .stage-progress-fill {{
-                background: {status_color};
-                height: 100%;
-                border-radius: 10px;
-                transition: width 0.5s ease;
-                width: {current_stage_progress:.0f}%;
-            }}
-            
-            .stage-progress-text {{
-                font-size: 0.85em;
-                color: #666;
-                min-width: 50px;
-                text-align: right;
-            }}
-            
-            /* Status Cards */
-            .status-grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                gap: 20px;
-                margin-bottom: 25px;
-            }}
-            
-            .status-card {{
-                background: white;
-                padding: 20px;
-                border-radius: 15px;
-                text-align: center;
-                box-shadow: 0 5px 15px rgba(0,0,0,0.08);
-                transition: transform 0.3s;
-            }}
-            
-            .status-card:hover {{
-                transform: translateY(-3px);
-            }}
-            
-            .status-card .number {{
-                font-size: 2.5em;
-                font-weight: bold;
-                color: #000000;
-            }}
-            
-            .status-card .label {{
-                color: #666;
-                margin-top: 8px;
-                font-size: 0.9em;
-            }}
-            
-            /* Main Status Banner */
-            .main-status {{
-                background: white;
-                border-radius: 15px;
-                margin-bottom: 25px;
-                overflow: hidden;
-                box-shadow: 0 5px 20px rgba(0,0,0,0.1);
-            }}
-            
-            .status-banner {{
-                padding: 25px;
-                background: linear-gradient(135deg, {status_color} 0%, {status_color}cc 100%);
-                color: white;
-            }}
-            
-            .status-banner h2 {{
-                font-size: 1.5em;
-                margin-bottom: 8px;
-            }}
-            
-            .status-banner p {{
-                opacity: 0.95;
-                font-size: 1.1em;
-            }}
-            
-            /* Progress Bars */
-            .progress-section {{
-                padding: 25px;
-                border-bottom: 1px solid #e0e0e0;
-            }}
-            
-            .progress-item {{
-                margin-bottom: 20px;
-            }}
-            
-            .progress-label {{
-                display: flex;
-                justify-content: space-between;
-                margin-bottom: 8px;
-                color: #333;
-                font-weight: 500;
-            }}
-            
-            .progress-bar-container {{
-                background: #e0e0e0;
-                border-radius: 20px;
-                overflow: hidden;
-                height: 12px;
-            }}
-            
-            .progress-bar-fill.approval {{
-                background: {progress_color};
-                height: 100%;
-                border-radius: 20px;
-                transition: width 0.5s ease;
-                width: {approval_progress:.1f}%;
-            }}
-            
-            .progress-bar-fill.milestone {{
-                background: #666666;
-                height: 100%;
-                border-radius: 20px;
-                transition: width 0.5s ease;
-                width: {milestone_progress:.1f}%;
-            }}
-            
-            /* Two Column Layout */
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Close Progress Dashboard - {fiscal_period}</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f0f2f5;
+            padding: 20px;
+        }}
+        
+        .dashboard-container {{
+            max-width: 1400px;
+            margin: 0 auto;
+        }}
+        
+        /* ============ SECTION BLOCK STYLING ============ */
+        .section-block {{
+            background: white;
+            border-radius: 16px;
+            padding: 0;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            overflow: hidden;
+            border: 1px solid #e8eaed;
+        }}
+        
+        .section-header {{
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #e8eaed;
+        }}
+        
+        .section-header h2 {{
+            color: white;
+            font-size: 1.1em;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 0;
+        }}
+        
+        .section-header .section-badge {{
+            background: rgba(255,255,255,0.2);
+            color: white;
+            padding: 4px 14px;
+            border-radius: 20px;
+            font-size: 0.8em;
+            font-weight: 500;
+        }}
+        
+        .section-body {{
+            padding: 24px;
+        }}
+        
+        /* ============ HEADER SECTION ============ */
+        .dashboard-header {{
+            background: linear-gradient(135deg, #000000 0%, #1a1a2e 100%);
+            color: white;
+            padding: 28px 32px;
+            border-radius: 16px;
+            margin-bottom: 24px;
+            display: flex;
+            align-items: center;
+            gap: 25px;
+            flex-wrap: wrap;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+        }}
+        
+        .header-logo {{
+            height: 50px;
+        }}
+        
+        .header-title {{
+            flex-grow: 1;
+        }}
+        
+        .header-title h1 {{
+            font-size: 1.8em;
+            margin-bottom: 5px;
+            font-weight: 700;
+        }}
+        
+        .header-title p {{
+            opacity: 0.85;
+            font-size: 0.95em;
+        }}
+        
+        .period-selector {{
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }}
+        
+        .period-selector select {{
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.3);
+            font-size: 1em;
+            background: rgba(255,255,255,0.1);
+            color: white;
+            cursor: pointer;
+        }}
+        
+        .period-selector select option {{
+            background: #1a1a2e;
+            color: white;
+        }}
+        
+        .period-selector button {{
+            padding: 10px 20px;
+            background: rgba(255,255,255,0.15);
+            color: white;
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 500;
+        }}
+        
+        .period-selector button:hover {{
+            background: rgba(255,255,255,0.25);
+        }}
+        
+        .refresh-btn {{
+            background: rgba(255,255,255,0.15);
+            color: white;
+            border: 1px solid rgba(255,255,255,0.3);
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: all 0.3s;
+            font-weight: 500;
+        }}
+        
+        .refresh-btn:hover {{
+            background: rgba(255,255,255,0.25);
+        }}
+        
+        /* ============ STAGE INDICATOR ============ */
+        .stage-indicator-container {{
+            background: white;
+            border-radius: 16px;
+            padding: 24px 28px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            border-left: 6px solid {status_color};
+            border: 1px solid #e8eaed;
+            border-left: 6px solid {status_color};
+        }}
+        
+        .stage-indicator-icon {{
+            font-size: 3em;
+            min-width: 70px;
+            text-align: center;
+        }}
+        
+        .stage-indicator-content {{
+            flex-grow: 1;
+        }}
+        
+        .stage-indicator-label {{
+            font-size: 0.8em;
+            color: #6c757d;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 6px;
+            font-weight: 600;
+        }}
+        
+        .stage-indicator-name {{
+            font-size: 1.6em;
+            font-weight: 700;
+            color: #1a1a2e;
+        }}
+        
+        .stage-indicator-status {{
+            display: inline-block;
+            padding: 5px 14px;
+            border-radius: 20px;
+            font-size: 0.8em;
+            font-weight: 600;
+            margin-top: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        
+        .stage-status-completed {{
+            background: #d4edda;
+            color: #155724;
+        }}
+        
+        .stage-status-in-progress {{
+            background: #cce5ff;
+            color: #004085;
+        }}
+        
+        .stage-status-not-started {{
+            background: #e2e3e5;
+            color: #383d41;
+        }}
+        
+        .stage-progress-bar {{
+            width: 180px;
+            background: #e9ecef;
+            border-radius: 10px;
+            height: 10px;
+            overflow: hidden;
+        }}
+        
+        .stage-progress-fill {{
+            background: {status_color};
+            height: 100%;
+            border-radius: 10px;
+            transition: width 0.5s ease;
+            width: {current_stage_progress:.0f}%;
+        }}
+        
+        .stage-progress-text {{
+            font-size: 0.9em;
+            color: #6c757d;
+            min-width: 50px;
+            text-align: right;
+            font-weight: 600;
+        }}
+        
+        /* ============ MILESTONE GRID ============ */
+        .milestone-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 16px;
+        }}
+        
+        .milestone-card {{
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            border-left: 4px solid #e0e0e0;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            border: 1px solid #e8eaed;
+            border-left: 4px solid #e0e0e0;
+        }}
+        
+        .milestone-card:hover {{
+            transform: translateY(-4px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.12);
+            border-color: #d0d5dd;
+        }}
+        
+        .milestone-card.status-completed {{
+            border-left-color: #28a745;
+            background: linear-gradient(135deg, #ffffff 0%, #f0fff4 100%);
+        }}
+        
+        .milestone-card.status-in-progress {{
+            border-left-color: #007bff;
+            background: linear-gradient(135deg, #ffffff 0%, #f0f7ff 100%);
+        }}
+        
+        .milestone-card.status-not-started {{
+            border-left-color: #6c757d;
+            background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+        }}
+        
+        .milestone-card-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+        }}
+        
+        .milestone-card-title {{
+            font-weight: 600;
+            color: #1a1a2e;
+            font-size: 0.95em;
+            line-height: 1.4;
+            flex: 1;
+        }}
+        
+        .milestone-card-weight {{
+            background: #f0f2f5;
+            color: #495057;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-weight: 600;
+            white-space: nowrap;
+        }}
+        
+        .milestone-status-badge {{
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.7em;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            width: fit-content;
+        }}
+        
+        .milestone-status-badge.completed {{
+            background: #d4edda;
+            color: #155724;
+        }}
+        
+        .milestone-status-badge.in-progress {{
+            background: #cce5ff;
+            color: #004085;
+        }}
+        
+        .milestone-status-badge.not-started {{
+            background: #e2e3e5;
+            color: #383d41;
+        }}
+        
+        .milestone-progress-section {{
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }}
+        
+        .milestone-progress-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        
+        .milestone-progress-label {{
+            font-size: 0.7em;
+            color: #6c757d;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }}
+        
+        .milestone-progress-percent {{
+            font-size: 1.1em;
+            font-weight: 700;
+            color: #1a1a2e;
+        }}
+        
+        .milestone-progress-bar-container {{
+            background: #e9ecef;
+            border-radius: 10px;
+            height: 8px;
+            overflow: hidden;
+        }}
+        
+        .milestone-progress-bar-fill {{
+            height: 100%;
+            border-radius: 10px;
+            transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+        }}
+        
+        .milestone-progress-bar-fill.completed {{
+            background: linear-gradient(90deg, #28a745, #20c997);
+        }}
+        
+        .milestone-progress-bar-fill.in-progress {{
+            background: linear-gradient(90deg, #007bff, #0056b3);
+        }}
+        
+        .milestone-progress-bar-fill.not-started {{
+            background: #adb5bd;
+            width: 0% !important;
+        }}
+        
+        /* ============ STATUS CARDS ============ */
+        .status-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+        }}
+        
+        .status-card {{
+            background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+            padding: 24px;
+            border-radius: 12px;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            transition: all 0.3s;
+            border: 1px solid #e8eaed;
+        }}
+        
+        .status-card:hover {{
+            transform: translateY(-3px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.1);
+        }}
+        
+        .status-card .number {{
+            font-size: 2.5em;
+            font-weight: 700;
+            color: #1a1a2e;
+        }}
+        
+        .status-card .label {{
+            color: #6c757d;
+            margin-top: 8px;
+            font-size: 0.85em;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        
+        /* ============ MAIN STATUS BANNER ============ */
+        .status-banner {{
+            padding: 28px;
+            background: linear-gradient(135deg, {status_color} 0%, {status_color}dd 100%);
+            color: white;
+            border-radius: 12px;
+            margin-bottom: 16px;
+        }}
+        
+        .status-banner h2 {{
+            font-size: 1.4em;
+            margin-bottom: 8px;
+        }}
+        
+        .status-banner p {{
+            opacity: 0.95;
+            font-size: 1.05em;
+        }}
+        
+        .progress-section {{
+            padding: 24px;
+        }}
+        
+        .progress-item {{
+            margin-bottom: 20px;
+        }}
+        
+        .progress-item:last-child {{
+            margin-bottom: 0;
+        }}
+        
+        .progress-label {{
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            color: #1a1a2e;
+            font-weight: 600;
+            font-size: 0.95em;
+        }}
+        
+        .progress-bar-container {{
+            background: #e9ecef;
+            border-radius: 20px;
+            overflow: hidden;
+            height: 12px;
+        }}
+        
+        .progress-bar-fill.approval {{
+            background: {progress_color};
+            height: 100%;
+            border-radius: 20px;
+            transition: width 0.5s ease;
+            width: {approval_progress:.1f}%;
+        }}
+        
+        .progress-bar-fill.milestone {{
+            background: #666666;
+            height: 100%;
+            border-radius: 20px;
+            transition: width 0.5s ease;
+            width: {milestone_progress:.1f}%;
+        }}
+        
+        /* ============ CFO SUMMARY ============ */
+        .cfo-summary {{
+            background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
+            border-left: 4px solid #1a1a2e;
+            padding: 24px;
+            border-radius: 12px;
+            font-size: 0.95em;
+            line-height: 1.7;
+            white-space: pre-line;
+            border: 1px solid #e8eaed;
+            border-left: 4px solid #1a1a2e;
+        }}
+        
+        .cfo-summary h3 {{
+            color: #1a1a2e;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.2em;
+        }}
+        
+        /* ============ TWO COLUMN LAYOUT ============ */
+        .two-column {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }}
+        
+        /* ============ LIST ITEMS ============ */
+        .item-list {{
+            list-style: none;
+            padding: 0;
+        }}
+        
+        .item-list li {{
+            padding: 14px;
+            border-bottom: 1px solid #f0f2f5;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            transition: background 0.2s;
+        }}
+        
+        .item-list li:hover {{
+            background: #f8f9fa;
+        }}
+        
+        .item-list li:last-child {{
+            border-bottom: none;
+        }}
+        
+        .item-type {{
+            font-weight: 600;
+            color: #1a1a2e;
+            min-width: 140px;
+        }}
+        
+        .item-description {{
+            flex-grow: 1;
+            color: #495057;
+            font-size: 0.9em;
+        }}
+        
+        .item-amount {{
+            font-weight: 600;
+            color: #1a1a2e;
+            min-width: 100px;
+            text-align: right;
+        }}
+        
+        .item-action {{
+            min-width: 80px;
+            text-align: right;
+        }}
+        
+        .item-action a {{
+            color: #007bff;
+            text-decoration: none;
+            font-size: 0.85em;
+            font-weight: 500;
+        }}
+        
+        .item-action a:hover {{
+            text-decoration: underline;
+        }}
+        
+        .status-badge {{
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.7em;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }}
+        
+        .status-critical {{
+            background: #f8d7da;
+            color: #721c24;
+        }}
+        
+        .status-high {{
+            background: #fff3cd;
+            color: #856404;
+        }}
+        
+        .status-medium {{
+            background: #fff3cd;
+            color: #856404;
+        }}
+        
+        .status-low {{
+            background: #d4edda;
+            color: #155724;
+        }}
+        
+        .overdue {{
+            background: #f8d7da;
+            color: #721c24;
+        }}
+        
+        /* ============ FOOTER ============ */
+        .footer {{
+            text-align: center;
+            margin-top: 32px;
+            padding: 24px;
+            color: #6c757d;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            border: 1px solid #e8eaed;
+        }}
+        
+        .footer a {{
+            color: #1a1a2e;
+            text-decoration: none;
+            margin: 0 12px;
+            font-weight: 500;
+        }}
+        
+        .footer a:hover {{
+            text-decoration: underline;
+            color: #007bff;
+        }}
+        
+        .auto-refresh {{
+            font-size: 0.8em;
+            color: #adb5bd;
+            margin-top: 8px;
+        }}
+        
+        /* ============ RESPONSIVE ============ */
+        @media (max-width: 768px) {{
             .two-column {{
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 25px;
-                margin-bottom: 25px;
+                grid-template-columns: 1fr;
             }}
             
-            /* Cards */
-            .card {{
-                background: white;
-                border-radius: 15px;
-                overflow: hidden;
-                box-shadow: 0 5px 15px rgba(0,0,0,0.08);
-            }}
-            
-            .card-header {{
-                background: #f8f9fa;
-                padding: 15px 20px;
-                border-bottom: 2px solid #000000;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-            }}
-            
-            .card-header h3 {{
-                margin: 0;
-                color: #000000;
-            }}
-            
-            .card-header .badge {{
-                background: #000000;
-                color: white;
-                padding: 4px 10px;
-                border-radius: 20px;
-                font-size: 0.8em;
-            }}
-            
-            .card-content {{
-                padding: 20px;
-                max-height: 400px;
-                overflow-y: auto;
-            }}
-            
-            /* Item Lists */
-            .item-list {{
-                list-style: none;
-                padding: 0;
-            }}
-            
-            .item-list li {{
-                padding: 12px;
-                border-bottom: 1px solid #f0f0f0;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                flex-wrap: wrap;
-                gap: 10px;
-            }}
-            
-            .item-list li:last-child {{
-                border-bottom: none;
-            }}
-            
-            .item-type {{
-                font-weight: 600;
-                color: #000000;
-                min-width: 140px;
-            }}
-            
-            .item-description {{
-                flex-grow: 1;
-                color: #555;
-                font-size: 0.9em;
-            }}
-            
-            .item-amount {{
-                font-weight: 500;
-                color: #333;
-                min-width: 100px;
-                text-align: right;
-            }}
-            
-            .item-action {{
-                min-width: 80px;
-                text-align: right;
-            }}
-            
-            .item-action a {{
-                color: #000000;
-                text-decoration: none;
-                font-size: 0.85em;
-            }}
-            
-            .item-action a:hover {{
-                text-decoration: underline;
-            }}
-            
-            .status-badge {{
-                display: inline-block;
-                padding: 3px 8px;
-                border-radius: 12px;
-                font-size: 0.7em;
-                font-weight: 500;
-            }}
-            
-            .status-critical {{
-                background: #dc3545;
-                color: white;
-            }}
-            
-            .status-high {{
-                background: #fd7e14;
-                color: white;
-            }}
-            
-            .status-medium {{
-                background: #ffc107;
-                color: #333;
-            }}
-            
-            .status-low {{
-                background: #28a745;
-                color: white;
-            }}
-            
-            .overdue {{
-                background: #dc3545;
-                color: white;
-            }}
-            
-            /* CFO Summary Box */
-            .cfo-summary {{
-                background: #f8f9fa;
-                border-left: 4px solid #000000;
-                padding: 20px;
-                margin-bottom: 25px;
-                border-radius: 10px;
-                font-size: 0.95em;
-                line-height: 1.6;
-                white-space: pre-line;
-            }}
-            
-            .cfo-summary h3 {{
-                color: #000000;
-                margin-bottom: 12px;
-                display: flex;
-                align-items: center;
-                gap: 10px;
-            }}
-            
-            /* Milestone Items with Progress Bars */
-            .milestone-item {{
-                padding: 15px 0;
-                border-bottom: 1px solid #f0f0f0;
-            }}
-            
-            .milestone-item:last-child {{
-                border-bottom: none;
-            }}
-            
-            .milestone-header {{
-                display: flex;
-                align-items: center;
-                gap: 12px;
-                margin-bottom: 8px;
-            }}
-            
-            .milestone-icon {{
-                width: 28px;
-                height: 28px;
-                border-radius: 50%;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 0.85em;
-                flex-shrink: 0;
-            }}
-            
-            .milestone-icon.completed {{
-                background: #000000;
-                color: white;
-            }}
-            
-            .milestone-icon.in-progress {{
-                background: #333333;
-                color: white;
-            }}
-            
-            .milestone-icon.not-started {{
-                background: #e0e0e0;
-                color: #666;
-            }}
-            
-            .milestone-name {{
-                font-weight: 500;
-                color: #333;
-                flex-grow: 1;
-            }}
-            
-            .milestone-weight {{
-                color: #666;
-                font-size: 0.8em;
-            }}
-            
-            .milestone-progress-container {{
-                background: #e0e0e0;
-                border-radius: 10px;
-                height: 8px;
-                overflow: hidden;
-                margin-left: 40px;
-            }}
-            
-            .milestone-progress-bar {{
-                height: 100%;
-                border-radius: 10px;
-                transition: width 0.5s ease;
-            }}
-            
-            .milestone-progress-bar.completed {{
-                background: #000000;
-            }}
-            
-            .milestone-progress-bar.in-progress {{
-                background: #666666;
-            }}
-            
-            .milestone-progress-bar.not-started {{
-                background: #cccccc;
-            }}
-            
-            .milestone-percent {{
-                font-size: 0.85em;
-                color: #666;
-                margin-left: 40px;
-                margin-top: 4px;
-            }}
-            
-            /* Footer */
-            .footer {{
+            .dashboard-header {{
+                flex-direction: column;
                 text-align: center;
-                margin-top: 30px;
-                padding: 20px;
-                color: #666;
-                border-top: 1px solid #e0e0e0;
             }}
             
-            .footer a {{
-                color: #000000;
-                text-decoration: none;
-                margin: 0 10px;
+            .stage-indicator-container {{
+                flex-direction: column;
+                text-align: center;
             }}
             
-            .footer a:hover {{
-                text-decoration: underline;
+            .milestone-grid {{
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 12px;
             }}
-            
-            /* Responsive */
-            @media (max-width: 768px) {{
-                .two-column {{
-                    grid-template-columns: 1fr;
-                }}
-                
-                .dashboard-header {{
-                    flex-direction: column;
-                    text-align: center;
-                }}
-                
-                .stage-indicator-container {{
-                    flex-direction: column;
-                    text-align: center;
-                }}
-            }}
-            
-            .auto-refresh {{
-                font-size: 0.8em;
-                color: #888;
-                margin-top: 5px;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="dashboard-container">
-            <!-- Header -->
-            <div class="dashboard-header">
-                <img src="data:image/png;base64,{logo_base64}" alt="Octane Logo" class="header-logo">
-                <div class="header-title">
-                    <h1>📊 Close Progress Dashboard</h1>
-                    <p>Real-time tracking of month-end close activities and approvals</p>
-                </div>
-                <div class="period-selector">
-                    <select id="periodSelect">
-                        <option value="2026-04" {'selected' if fiscal_period == '2026-04' else ''}>April 2026</option>
-                        <option value="2026-03" {'selected' if fiscal_period == '2026-03' else ''}>March 2026</option>
-                        <option value="2026-02" {'selected' if fiscal_period == '2026-02' else ''}>February 2026</option>
-                        <option value="2026-01" {'selected' if fiscal_period == '2026-01' else ''}>January 2026</option>
-                    </select>
-                    <button onclick="changePeriod()">Go</button>
-                    <button class="refresh-btn" onclick="refreshDashboard()">🔄 Refresh</button>
+        }}
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- ============ HEADER BLOCK ============ -->
+        <div class="dashboard-header">
+            <img src="data:image/png;base64,{logo_base64}" alt="Octane Logo" class="header-logo">
+            <div class="header-title">
+                <h1>📊 Close Progress Dashboard</h1>
+                <p>Real-time tracking of month-end close activities and approvals</p>
+            </div>
+            <div class="period-selector">
+                <select id="periodSelect">
+                    <option value="2026-04" {'selected' if fiscal_period == '2026-04' else ''}>April 2026</option>
+                    <option value="2026-03" {'selected' if fiscal_period == '2026-03' else ''}>March 2026</option>
+                    <option value="2026-02" {'selected' if fiscal_period == '2026-02' else ''}>February 2026</option>
+                    <option value="2026-01" {'selected' if fiscal_period == '2026-01' else ''}>January 2026</option>
+                </select>
+                <button onclick="changePeriod()">Go</button>
+                <button class="refresh-btn" onclick="refreshDashboard()">🔄 Refresh</button>
+            </div>
+        </div>
+        
+        <!-- ============ CURRENT STAGE BLOCK ============ -->
+        <div class="stage-indicator-container" id="current-stage-container">
+            <div class="stage-indicator-icon" id="stage-icon">{stage_icon}</div>
+            <div class="stage-indicator-content">
+                <div class="stage-indicator-label">Current Stage</div>
+                <div class="stage-indicator-name" id="stage-name">{current_stage_name}</div>
+                <span class="stage-indicator-status {stage_status_css}" id="stage-status-badge">
+                    {current_stage_status.replace('_', ' ')}
+                </span>
+            </div>
+            <div class="stage-progress-bar">
+                <div class="stage-progress-fill" id="stage-progress-fill" style="width: {current_stage_progress:.0f}%"></div>
+            </div>
+            <div class="stage-progress-text" id="stage-progress-text">{current_stage_progress:.0f}%</div>
+        </div>
+        
+        <!-- ============ MILESTONE PROGRESS BLOCK ============ -->
+        <div class="section-block">
+            <div class="section-header">
+                <h2>
+                    <span>🎯</span> Close Milestones Progress
+                </h2>
+                <span class="section-badge" id="milestone-remaining-badge">
+                    {len(analysis['incomplete_milestones'])} Remaining
+                </span>
+            </div>
+            <div class="section-body">
+                <div class="milestone-grid" id="milestone-grid">
+                    {milestone_cards_html}
                 </div>
             </div>
-            
-            <!-- Current Stage Indicator -->
-            <div class="stage-indicator-container" id="current-stage-container">
-                <div class="stage-indicator-icon" id="stage-icon">{stage_icon}</div>
-                <div class="stage-indicator-content">
-                    <div class="stage-indicator-label">Current Stage</div>
-                    <div class="stage-indicator-name" id="stage-name">{current_stage_name}</div>
-                    <span class="stage-indicator-status {stage_status_css}" id="stage-status-badge">
-                        {current_stage_status.replace('_', ' ')}
-                    </span>
-                </div>
-                <div class="stage-progress-bar">
-                    <div class="stage-progress-fill" id="stage-progress-fill" style="width: {current_stage_progress:.0f}%"></div>
-                </div>
-                <div class="stage-progress-text" id="stage-progress-text">{current_stage_progress:.0f}%</div>
+        </div>
+        
+        <!-- ============ KEY METRICS BLOCK ============ -->
+        <div class="section-block">
+            <div class="section-header">
+                <h2>
+                    <span>📈</span> Key Metrics Overview
+                </h2>
+                <span class="section-badge">Real-time</span>
             </div>
-            
-            <!-- Status Cards -->
-            <div class="status-grid">
-                <div class="status-card">
-                    <div class="number" id="approval-progress-number">{approval_progress:.0f}%</div>
-                    <div class="label">Approval Progress</div>
-                </div>
-                <div class="status-card">
-                    <div class="number" id="milestone-progress-number">{milestone_progress:.0f}%</div>
-                    <div class="label">Milestone Progress</div>
-                </div>
-                <div class="status-card">
-                    <div class="number" id="total-items-number">{analysis['summary']['total_approvals_generated']}</div>
-                    <div class="label">Total Items</div>
-                </div>
-                <div class="status-card">
-                    <div class="number" id="approved-number">{analysis['summary']['approved']}</div>
-                    <div class="label">Approved</div>
-                </div>
-                <div class="status-card">
-                    <div class="number" id="pending-number">{analysis['summary']['pending']}</div>
-                    <div class="label">Pending</div>
+            <div class="section-body">
+                <div class="status-grid">
+                    <div class="status-card">
+                        <div class="number" id="approval-progress-number">{approval_progress:.0f}%</div>
+                        <div class="label">Approval Progress</div>
+                    </div>
+                    <div class="status-card">
+                        <div class="number" id="milestone-progress-number">{milestone_progress:.0f}%</div>
+                        <div class="label">Milestone Progress</div>
+                    </div>
+                    <div class="status-card">
+                        <div class="number" id="total-items-number">{analysis['summary']['total_approvals_generated']}</div>
+                        <div class="label">Total Items</div>
+                    </div>
+                    <div class="status-card">
+                        <div class="number" id="approved-number">{analysis['summary']['approved']}</div>
+                        <div class="label">Approved</div>
+                    </div>
+                    <div class="status-card">
+                        <div class="number" id="pending-number">{analysis['summary']['pending']}</div>
+                        <div class="label">Pending</div>
+                    </div>
                 </div>
             </div>
-            
-            <!-- Main Status Banner -->
-            <div class="main-status">
+        </div>
+        
+        <!-- ============ STATUS & PROGRESS BLOCK ============ -->
+        <div class="section-block">
+            <div class="section-header">
+                <h2>
+                    <span>📊</span> Overall Status & Progress
+                </h2>
+                <span class="section-badge">{analysis['overall_status'].replace('_', ' ')}</span>
+            </div>
+            <div class="section-body">
                 <div class="status-banner">
                     <h2 id="status-heading">{analysis['overall_status'].replace('_', ' ')} - {analysis['status_message']}</h2>
                     <p>Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                 </div>
                 
-                <div class="progress-section">
-                    <div class="progress-item">
-                        <div class="progress-label">
-                            <span>📋 Approval Progress</span>
-                            <span id="approval-progress-label">{analysis['summary'].get('approval_progress_status', f"{approval_progress:.0f}%")}</span>
-                        </div>
-                        <div class="progress-bar-container">
-                            <div class="progress-bar-fill approval" id="approval-progress-bar" style="width: {approval_progress:.1f}%"></div>
-                        </div>
+                <div class="progress-item">
+                    <div class="progress-label">
+                        <span>📋 Approval Progress</span>
+                        <span id="approval-progress-label">{analysis['summary'].get('approval_progress_status', f"{approval_progress:.0f}%")}</span>
                     </div>
-                    <div class="progress-item">
-                        <div class="progress-label">
-                            <span>🎯 Milestone Progress</span>
-                            <span id="milestone-progress-label">{milestone_progress:.1f}%</span>
-                        </div>
-                        <div class="progress-bar-container">
-                            <div class="progress-bar-fill milestone" id="milestone-progress-bar" style="width: {milestone_progress:.1f}%"></div>
-                        </div>
+                    <div class="progress-bar-container">
+                        <div class="progress-bar-fill approval" id="approval-progress-bar" style="width: {approval_progress:.1f}%"></div>
+                    </div>
+                </div>
+                <div class="progress-item">
+                    <div class="progress-label">
+                        <span>🎯 Milestone Progress</span>
+                        <span id="milestone-progress-label">{milestone_progress:.1f}%</span>
+                    </div>
+                    <div class="progress-bar-container">
+                        <div class="progress-bar-fill milestone" id="milestone-progress-bar" style="width: {milestone_progress:.1f}%"></div>
                     </div>
                 </div>
             </div>
-            
-            <!-- CFO Summary -->
-            <div class="cfo-summary">
-                <h3>
+        </div>
+        
+        <!-- ============ CFO EXECUTIVE SUMMARY BLOCK ============ -->
+        <div class="section-block">
+            <div class="section-header">
+                <h2>
                     <span>📝</span> CFO Executive Summary
-                    <span style="font-size: 0.7em; background: #000000; color: white; padding: 2px 8px; border-radius: 12px;">{fiscal_period}</span>
-                </h3>
-                <div id="cfoSummaryText">{cfo_summary.replace(chr(10), '<br>')}</div>
+                </h2>
+                <span class="section-badge">{fiscal_period}</span>
             </div>
-            
-            <!-- Two Column Layout -->
-            <div class="two-column">
-                <!-- Blockers & Critical Items -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3>🚫 Blockers & Critical Items</h3>
-                        <span class="badge" id="critical-badge">{len(analysis['critical_blockers'])} Critical</span>
-                    </div>
-                    <div class="card-content" id="blockers-content">
-                        {_render_blockers_html(analysis['critical_blockers'], analysis['other_blockers'])}
-                    </div>
-                </div>
-                
-                <!-- Pending Items -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3>⏳ Pending Approvals</h3>
-                        <span class="badge" id="pending-badge">{analysis['summary']['pending']} Items</span>
-                    </div>
-                    <div class="card-content" id="pending-content">
-                        {_render_pending_items_html(analysis['pending_items'], analysis['overdue_items'])}
-                    </div>
+            <div class="section-body">
+                <div class="cfo-summary" id="cfoSummaryText">
+                    {cfo_summary.replace(chr(10), '<br>')}
                 </div>
             </div>
-            
-            <!-- Second Row -->
-            <div class="two-column">
-                <!-- Milestones with Progress Bars -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3>🎯 Close Milestones</h3>
-                        <span class="badge" id="milestone-remaining-badge">{len(analysis['incomplete_milestones'])} Remaining</span>
+        </div>
+        
+        <!-- ============ DETAILED ITEMS BLOCK ============ -->
+        <div class="section-block">
+            <div class="section-header">
+                <h2>
+                    <span>🔍</span> Detailed Items & Actions
+                </h2>
+                <span class="section-badge">Action Required</span>
+            </div>
+            <div class="section-body">
+                <div class="two-column">
+                    <!-- Blockers & Critical Items -->
+                    <div>
+                        <h3 style="color: #1a1a2e; margin-bottom: 12px; font-size: 1em;">
+                            🚫 Blockers & Critical Items
+                            <span style="background: #dc3545; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.75em; margin-left: 8px;" id="critical-badge">
+                                {len(analysis['critical_blockers'])} Critical
+                            </span>
+                        </h3>
+                        <div id="blockers-content" style="border: 1px solid #e8eaed; border-radius: 8px; padding: 12px;">
+                            {_render_blockers_html(analysis['critical_blockers'], analysis['other_blockers'])}
+                        </div>
                     </div>
-                    <div class="card-content" id="milestone-list">
-                        {milestone_html}
-                    </div>
-                </div>
-                
-                <!-- Recent Activity / Audit Trail -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3>📋 Recent Activity</h3>
-                        <span class="badge">Audit Trail</span>
-                    </div>
-                    <div class="card-content" id="audit-trail-content">
-                        {_render_audit_trail_html(analysis['approved_items'], analysis['assigned_items'])}
+                    
+                    <!-- Pending Items -->
+                    <div>
+                        <h3 style="color: #1a1a2e; margin-bottom: 12px; font-size: 1em;">
+                            ⏳ Pending Approvals
+                            <span style="background: #ffc107; color: #1a1a2e; padding: 2px 8px; border-radius: 10px; font-size: 0.75em; margin-left: 8px;" id="pending-badge">
+                                {analysis['summary']['pending']} Items
+                            </span>
+                        </h3>
+                        <div id="pending-content" style="border: 1px solid #e8eaed; border-radius: 8px; padding: 12px;">
+                            {_render_pending_items_html(analysis['pending_items'], analysis['overdue_items'])}
+                        </div>
                     </div>
                 </div>
             </div>
-            
-            <!-- Footer -->
-            <div class="footer">
+        </div>
+        
+        <!-- ============ RECENT ACTIVITY BLOCK ============ -->
+        <div class="section-block">
+            <div class="section-header">
+                <h2>
+                    <span>📋</span> Recent Activity & Audit Trail
+                </h2>
+                <span class="section-badge">Audit Trail</span>
+            </div>
+            <div class="section-body">
+                <div id="audit-trail-content">
+                    {_render_audit_trail_html(analysis['approved_items'], analysis['assigned_items'])}
+                </div>
+            </div>
+        </div>
+        
+        <!-- ============ FOOTER ============ -->
+        <div class="footer">
+            <div style="display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin-bottom: 12px;">
                 <a href="/dashboard">← Approval Dashboard</a>
                 <a href="/cfo/financial_dashboard">💰 CFO Dashboard</a>
                 <a href="/reports/email/preview">📧 Email Reports</a>
                 <a href="/approvals/history">📋 Approval History</a>
-                <p style="margin-top: 15px;">Finance Month-End Close AI Agent v3.0.0 | Auto-refreshes every 30 seconds</p>
-                <div class="auto-refresh">🔄 Live updates - data refreshes automatically</div>
             </div>
+            <p style="margin-top: 12px; font-size: 0.9em;">Finance Month-End Close AI Agent v3.0.0 | Auto-refreshes every 30 seconds</p>
+            <div class="auto-refresh">🔄 Live updates - data refreshes automatically</div>
         </div>
+    </div>
+    
+    <script>
+        let refreshInterval;
         
-        <script>
-            let refreshInterval;
-            
-            function refreshDashboard() {{
+        function refreshDashboard() {{
+            const period = document.getElementById('periodSelect').value;
+            window.location.href = `/dashboard/progress?fiscal_period=${{period}}`;
+        }}
+        
+        function changePeriod() {{
+            refreshDashboard();
+        }}
+        
+        function startAutoRefresh() {{
+            if (refreshInterval) clearInterval(refreshInterval);
+            refreshInterval = setInterval(() => {{
                 const period = document.getElementById('periodSelect').value;
-                window.location.href = `/dashboard/progress?fiscal_period=${{period}}`;
+                fetch(`/api/close/progress?fiscal_period=${{period}}`)
+                    .then(response => response.json())
+                    .then(data => {{
+                        updateDashboardData(data);
+                    }})
+                    .catch(err => console.error('Auto-refresh error:', err));
+            }}, 30000);
+        }}
+        
+        function renderMilestoneCards(milestoneData) {{
+            const milestoneGrid = document.getElementById('milestone-grid');
+            const remainingBadge = document.getElementById('milestone-remaining-badge');
+            
+            if (!milestoneData || !milestoneData.milestones || Object.keys(milestoneData.milestones).length === 0) {{
+                milestoneGrid.innerHTML = `
+                    <div style="grid-column: 1 / -1; text-align: center; padding: 40px 20px; color: #6c757d;">
+                        <div style="font-size: 2.5em; margin-bottom: 10px;">📋</div>
+                        <div style="font-size: 0.95em; font-weight: 500;">No milestones configured for this period</div>
+                    </div>
+                `;
+                if (remainingBadge) remainingBadge.textContent = '0 Remaining';
+                return;
             }}
             
-            function changePeriod() {{
-                refreshDashboard();
-            }}
+            const milestones = milestoneData.milestones;
+            let cardsHtml = '';
+            let incompleteCount = 0;
             
-            function startAutoRefresh() {{
-                if (refreshInterval) clearInterval(refreshInterval);
-                refreshInterval = setInterval(() => {{
-                    const period = document.getElementById('periodSelect').value;
-                    fetch(`/api/close/progress?fiscal_period=${{period}}`)
-                        .then(response => response.json())
-                        .then(data => {{
-                            updateDashboardData(data);
-                        }})
-                        .catch(err => console.error('Auto-refresh error:', err));
-                }}, 30000);
-            }}
-            
-            function updateDashboardData(data) {{
-                // Update status cards
-                document.getElementById('approval-progress-number').textContent = 
-                    data.summary.approval_progress_percent.toFixed(0) + '%';
-                document.getElementById('milestone-progress-number').textContent = 
-                    data.summary.milestone_progress_percent.toFixed(0) + '%';
-                document.getElementById('total-items-number').textContent = 
-                    data.summary.total_approvals_generated;
-                document.getElementById('approved-number').textContent = 
-                    data.summary.approved;
-                document.getElementById('pending-number').textContent = 
-                    data.summary.pending;
+            for (const [key, milestone] of Object.entries(milestones)) {{
+                const status = milestone.status || 'NOT_STARTED';
+                const statusClass = status === 'COMPLETED' ? 'completed' : 
+                                  status === 'IN_PROGRESS' ? 'in-progress' : 'not-started';
                 
-                // Update status heading
-                document.getElementById('status-heading').textContent = 
-                    data.overall_status.replace('_', ' ') + ' - ' + data.status_message;
+                const progress = status === 'NOT_STARTED' ? 0 : (milestone.progress || 0);
                 
-                // Update approval progress bar
-                const approvalProgress = data.summary.approval_progress_percent;
-                document.getElementById('approval-progress-bar').style.width = approvalProgress + '%';
-                document.getElementById('approval-progress-label').textContent = 
-                    data.summary.approval_progress_status || (approvalProgress.toFixed(0) + '%');
-                
-                // Update milestone progress bar
-                const milestoneProgress = data.summary.milestone_progress_percent;
-                document.getElementById('milestone-progress-bar').style.width = milestoneProgress + '%';
-                document.getElementById('milestone-progress-label').textContent = 
-                    milestoneProgress.toFixed(1) + '%';
-                
-                // Update current stage indicator
-                const currentStage = data.current_stage;
-                const stageNameEl = document.getElementById('stage-name');
-                const stageStatusBadge = document.getElementById('stage-status-badge');
-                const stageProgressFill = document.getElementById('stage-progress-fill');
-                const stageProgressText = document.getElementById('stage-progress-text');
-                const stageContainer = document.getElementById('current-stage-container');
-                const stageIcon = document.getElementById('stage-icon');
-                
-                if (currentStage.status === 'COMPLETED') {{
-                    stageIcon.textContent = '✅';
-                    stageNameEl.textContent = currentStage.stage_name;
-                    stageStatusBadge.textContent = 'COMPLETED';
-                    stageStatusBadge.className = 'stage-indicator-status stage-status-completed';
-                    stageProgressFill.style.width = '100%';
-                    stageProgressText.textContent = '100%';
-                    stageContainer.style.borderLeftColor = '#28a745';
-                }} else if (currentStage.status === 'NOT_STARTED') {{
-                    stageIcon.textContent = '🔵';
-                    stageNameEl.textContent = currentStage.stage_name;
-                    stageStatusBadge.textContent = 'NOT STARTED';
-                    stageStatusBadge.className = 'stage-indicator-status stage-status-not-started';
-                    stageProgressFill.style.width = '0%';
-                    stageProgressText.textContent = '0%';
-                    stageContainer.style.borderLeftColor = '#6c757d';
-                }} else {{
-                    stageIcon.textContent = '🔄';
-                    stageNameEl.textContent = currentStage.stage_name;
-                    stageStatusBadge.textContent = 'IN PROGRESS';
-                    stageStatusBadge.className = 'stage-indicator-status stage-status-in-progress';
-                    stageProgressFill.style.width = currentStage.progress + '%';
-                    stageProgressText.textContent = currentStage.progress.toFixed(0) + '%';
-                    stageContainer.style.borderLeftColor = '#007bff';
+                if (status !== 'COMPLETED') {{
+                    incompleteCount++;
                 }}
                 
-                // Update milestone list with progress
-                const milestoneContainer = document.getElementById('milestone-list');
-                let milestoneHtml = '';
-                
-                if (data.milestone_summary && data.milestone_summary.milestones) {{
-                    for (const [key, milestone] of Object.entries(data.milestone_summary.milestones)) {{
-                        const statusClass = milestone.status === 'COMPLETED' ? 'completed' : 
-                                          milestone.status === 'IN_PROGRESS' ? 'in-progress' : 'not-started';
-                        const statusIcon = milestone.status === 'COMPLETED' ? '✅' : 
-                                         milestone.status === 'IN_PROGRESS' ? '🔄' : '○';
+                cardsHtml += `
+                    <div class="milestone-card status-${{statusClass}}">
+                        <div class="milestone-card-header">
+                            <div class="milestone-card-title">${{milestone.name || key}}</div>
+                            <div class="milestone-card-weight">${{milestone.weight || 0}}%</div>
+                        </div>
                         
-                        milestoneHtml += `
-                            <div class="milestone-item">
-                                <div class="milestone-header">
-                                    <span class="milestone-icon ${{statusClass}}">${{statusIcon}}</span>
-                                    <span class="milestone-name">${{milestone.name}}</span>
-                                    <span class="milestone-weight">(${{milestone.weight}}%)</span>
-                                </div>
-                                <div class="milestone-progress-container">
-                                    <div class="milestone-progress-bar ${{statusClass}}" 
-                                         style="width: ${{milestone.progress}}%"></div>
-                                </div>
-                                <div class="milestone-percent">${{milestone.progress.toFixed(0)}}% - ${{milestone.status.replace('_', ' ')}}</div>
+                        <span class="milestone-status-badge ${{statusClass}}">
+                            ${{status.replace('_', ' ')}}
+                        </span>
+                        
+                        <div class="milestone-progress-section">
+                            <div class="milestone-progress-header">
+                                <span class="milestone-progress-label">Progress</span>
+                                <span class="milestone-progress-percent">${{progress.toFixed(0)}}%</span>
                             </div>
-                        `;
-                    }}
-                }}
-                
-                milestoneContainer.innerHTML = milestoneHtml;
-                
-                // Update badges
-                document.getElementById('critical-badge').textContent = 
-                    data.critical_blockers.length + ' Critical';
-                document.getElementById('pending-badge').textContent = 
-                    data.pending_items.length + ' Items';
-                document.getElementById('milestone-remaining-badge').textContent = 
-                    data.incomplete_milestones.length + ' Remaining';
+                            <div class="milestone-progress-bar-container">
+                                <div class="milestone-progress-bar-fill ${{statusClass}}" 
+                                     style="width: ${{progress}}%"></div>
+                            </div>
+                        </div>
+                    </div>
+                `;
             }}
             
-            // Start auto-refresh on page load
-            startAutoRefresh();
-        </script>
-    </body>
-    </html>
+            milestoneGrid.innerHTML = cardsHtml;
+            
+            if (remainingBadge) {{
+                remainingBadge.textContent = `${{incompleteCount}} Remaining`;
+            }}
+        }}
+        
+        function updateDashboardData(data) {{
+            // Update status cards
+            document.getElementById('approval-progress-number').textContent = 
+                data.summary.approval_progress_percent.toFixed(0) + '%';
+            document.getElementById('milestone-progress-number').textContent = 
+                data.summary.milestone_progress_percent.toFixed(0) + '%';
+            document.getElementById('total-items-number').textContent = 
+                data.summary.total_approvals_generated;
+            document.getElementById('approved-number').textContent = 
+                data.summary.approved;
+            document.getElementById('pending-number').textContent = 
+                data.summary.pending;
+            
+            // Update status heading
+            document.getElementById('status-heading').textContent = 
+                data.overall_status.replace('_', ' ') + ' - ' + data.status_message;
+            
+            // Update approval progress bar
+            const approvalProgress = data.summary.approval_progress_percent;
+            document.getElementById('approval-progress-bar').style.width = approvalProgress + '%';
+            document.getElementById('approval-progress-label').textContent = 
+                data.summary.approval_progress_status || (approvalProgress.toFixed(0) + '%');
+            
+            // Update milestone progress bar
+            const milestoneProgress = data.summary.milestone_progress_percent;
+            document.getElementById('milestone-progress-bar').style.width = milestoneProgress + '%';
+            document.getElementById('milestone-progress-label').textContent = 
+                milestoneProgress.toFixed(1) + '%';
+            
+            // Update current stage indicator
+            const currentStage = data.current_stage;
+            const stageNameEl = document.getElementById('stage-name');
+            const stageStatusBadge = document.getElementById('stage-status-badge');
+            const stageProgressFill = document.getElementById('stage-progress-fill');
+            const stageProgressText = document.getElementById('stage-progress-text');
+            const stageContainer = document.getElementById('current-stage-container');
+            const stageIcon = document.getElementById('stage-icon');
+            
+            if (currentStage.status === 'COMPLETED') {{
+                stageIcon.textContent = '✅';
+                stageNameEl.textContent = currentStage.stage_name;
+                stageStatusBadge.textContent = 'COMPLETED';
+                stageStatusBadge.className = 'stage-indicator-status stage-status-completed';
+                stageProgressFill.style.width = '100%';
+                stageProgressText.textContent = '100%';
+                stageContainer.style.borderLeftColor = '#28a745';
+            }} else if (currentStage.status === 'NOT_STARTED') {{
+                stageIcon.textContent = '🔵';
+                stageNameEl.textContent = currentStage.stage_name;
+                stageStatusBadge.textContent = 'NOT STARTED';
+                stageStatusBadge.className = 'stage-indicator-status stage-status-not-started';
+                stageProgressFill.style.width = '0%';
+                stageProgressText.textContent = '0%';
+                stageContainer.style.borderLeftColor = '#6c757d';
+            }} else {{
+                stageIcon.textContent = '🔄';
+                stageNameEl.textContent = currentStage.stage_name;
+                stageStatusBadge.textContent = 'IN PROGRESS';
+                stageStatusBadge.className = 'stage-indicator-status stage-status-in-progress';
+                stageProgressFill.style.width = currentStage.progress + '%';
+                stageProgressText.textContent = currentStage.progress.toFixed(0) + '%';
+                stageContainer.style.borderLeftColor = '#007bff';
+            }}
+            
+            // Update milestone cards
+            if (data.milestone_summary) {{
+                renderMilestoneCards(data.milestone_summary);
+            }}
+            
+            // Update badges
+            document.getElementById('critical-badge').textContent = 
+                data.critical_blockers.length + ' Critical';
+            document.getElementById('pending-badge').textContent = 
+                data.pending_items.length + ' Items';
+        }}
+        
+        // Start auto-refresh on page load
+        startAutoRefresh();
+    </script>
+</body>
+</html>
     """
     return HTMLResponse(content=html_content)
+
+def _render_milestones_single_line_html(milestones):
+    """Generate single-line milestone HTML with everything inline"""
+    milestone_html = ""
+    
+    if milestones:
+        for key, milestone in milestones.items():
+            status_class = 'completed' if milestone['status'] == 'COMPLETED' else \
+                          'in-progress' if milestone['status'] == 'IN_PROGRESS' else 'not-started'
+            status_icon = '✅' if milestone['status'] == 'COMPLETED' else \
+                         '🔄' if milestone['status'] == 'IN_PROGRESS' else '○'
+            
+            milestone_html += f"""
+                        <div class="milestone-item">
+                            <div class="milestone-header">
+                                <span class="milestone-icon {status_class}">{status_icon}</span>
+                                <span class="milestone-name">{milestone['name']}</span>
+                                <span class="milestone-weight">({milestone['weight']}%)</span>
+                                <div class="milestone-progress-container">
+                                    <div class="milestone-progress-bar {status_class}" 
+                                         style="width: {milestone['progress']}%"></div>
+                                </div>
+                                <div class="milestone-percent">{milestone['progress']:.0f}% - {milestone['status'].replace('_', ' ')}</div>
+                            </div>
+                        </div>
+            """
+    else:
+        milestone_html = '<p style="color: #666; text-align: center; padding: 20px;">No milestones defined</p>'
+    
+    return milestone_html
 
 
 def _render_blockers_html(critical_blockers: List[Dict], other_blockers: List[Dict]) -> str:
