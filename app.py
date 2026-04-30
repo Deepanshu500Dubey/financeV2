@@ -113,11 +113,11 @@ class ToolResponse(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.now)
 
 class TrialBalanceRequest(BaseModel):
-    fiscal_period: str = Field(..., example="2026-03")
+    fiscal_period: str = Field(..., example="2026-04")
     entity_code: str = Field(default="AUS01", example="AUS01")
 
 class ARVarianceRequest(BaseModel):
-    fiscal_period: str = Field(..., example="2026-03")
+    fiscal_period: str = Field(..., example="2026-04")
     entity_code: str = Field(default="AUS01", example="AUS01")
 
 class CostCenterAssignment(BaseModel):
@@ -127,7 +127,7 @@ class CostCenterAssignment(BaseModel):
 
 class CostCenterBatchRequest(BaseModel):
     assignments: List[CostCenterAssignment]
-    fiscal_period: str = Field(..., example="2026-03")
+    fiscal_period: str = Field(..., example="2026-04")
 
 class CostCenterSuggestion(BaseModel):
     transaction_id: str
@@ -137,7 +137,7 @@ class CostCenterSuggestion(BaseModel):
 
 class CostCenterSuggestionsRequest(BaseModel):
     suggestions: List[CostCenterSuggestion]
-    fiscal_period: str = Field(..., example="2026-03")
+    fiscal_period: str = Field(..., example="2026-04")
 
 
 class JournalEntry(BaseModel):
@@ -152,23 +152,23 @@ class JournalEntry(BaseModel):
 
 class JournalEntryRequest(BaseModel):
     entries: List[JournalEntry]
-    fiscal_period: str
+    fiscal_period: str = Field(..., example="2026-04")
 
 class BudgetVarianceRequest(BaseModel):
-    fiscal_period: str = Field(..., example="2026-03")
+    fiscal_period: str = Field(..., example="2026-04")
     entity_code: str = Field(default="AUS01", example="AUS01")
 
 class YoYComparisonRequest(BaseModel):
-    current_period: str = Field(..., example="2026-03")
-    comparison_period: str = Field(..., example="2025-03")
+    current_period: str = Field(..., example="2026-04")
+    comparison_period: str = Field(..., example="2025-04")
     entity_code: str = Field(default="AUS01", example="AUS01")
 
 class CostCenterPLRequest(BaseModel):
-    fiscal_period: str = Field(..., example="2026-03")
+    fiscal_period: str = Field(..., example="2026-04")
     entity_code: str = Field(default="AUS01", example="AUS01")
 
 class MonthEndCloseRequest(BaseModel):
-    fiscal_period: str = Field(..., example="2026-03")
+    fiscal_period: str = Field(..., example="2026-04")
     entity_code: str = Field(default="AUS01", example="AUS01")
     approved_by: str
     send_email_reports: bool = Field(True, description="Send email reports after closing")
@@ -218,7 +218,7 @@ class EmailRecipient(BaseModel):
 
 class EmailReportRequest(BaseModel):
     recipients: List[EmailRecipient]
-    fiscal_period: str = Field("2026-03", description="Fiscal period for reports")
+    fiscal_period: str = Field("2026-04", description="Fiscal period for reports")
     entity_code: str = Field("AUS01", description="Entity code")
     include_pdf: bool = Field(True, description="Include PDF report")
     include_csv: bool = Field(True, description="Include CSV data")
@@ -291,7 +291,7 @@ class ApprovalRegistry:
             'description': approval_item.description[:100],
             'amount': str(approval_item.amount) if approval_item.amount else '',
             'created_at': datetime.now().isoformat(),
-            'fiscal_period': approval_item.metadata.get('fiscal_period', '2026-03') if approval_item.metadata else '2026-03',
+            'fiscal_period': approval_item.metadata.get('fiscal_period', '2026-04') if approval_item.metadata else '2026-04',
             'entity': approval_item.metadata.get('entity', 'AUS01') if approval_item.metadata else 'AUS01',
             'status': 'PENDING',
             'metadata_summary': self._summarize_metadata(approval_item.metadata)
@@ -405,7 +405,7 @@ approval_registry = ApprovalRegistry()
 
 def update_progress_from_approvals():
     """Helper to update progress milestones after approvals"""
-    update_milestones_from_approvals("2026-03")
+    update_milestones_from_approvals("2026-04")
 
 # ============================================================================
 # DATA STORES (In-memory for demo - use database in production)
@@ -470,7 +470,7 @@ def create_approval_item(
     account: Optional[str] = None,
     cost_center: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
-    fiscal_period: str = "2026-03"
+    fiscal_period: str = "2026-04"
 ) -> ApprovalItem:
     """Create and store a new approval item"""
     item_id = str(uuid.uuid4())[:8]
@@ -907,7 +907,7 @@ class CloseProgressTracker:
 # Initialize progress tracker
 progress_tracker = CloseProgressTracker()
 
-def update_milestones_from_approvals(fiscal_period: str = "2026-03"):
+def update_milestones_from_approvals(fiscal_period: str = "2026-04"):
     """
     CORRECTED: Update milestone progress based on approval registry data.
     
@@ -984,10 +984,10 @@ def update_milestones_from_approvals(fiscal_period: str = "2026-03"):
 
 def update_progress_from_approvals():
     """Helper to update progress milestones after approvals"""
-    update_milestones_from_approvals("2026-03")
+    update_milestones_from_approvals("2026-04")
 
 
-def analyze_close_readiness(fiscal_period: str = "2026-03") -> Dict[str, Any]:
+def analyze_close_readiness(fiscal_period: str = "2026-04") -> Dict[str, Any]:
     """
     CORRECTED: Comprehensive analysis of close readiness based on current state.
     
@@ -1940,7 +1940,7 @@ def root():
                     <a href="/docs" class="link">📚 API Documentation</a>
                     <a href="/health" class="link">🔍 Health Check</a>
                     <a href="/approvals/history" class="link">📋 Approval History</a>
-                    <a href="/approvals/check_status/2026-03" class="link">✅ Check Approval Status</a>
+                    <a href="/approvals/check_status/2026-04" class="link">✅ Check Approval Status</a>
                 </div>
                 
                 <p class="version">Version 3.0.0 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
@@ -2427,7 +2427,7 @@ async def dashboard_home():
                 <button class="btn btn-danger" onclick="rejectAll()">❌ Reject All</button>
                 <button class="btn btn-primary" onclick="selectAll()">🔲 Select All</button>
                 <button class="btn btn-warning" onclick="clearSelection()">🔄 Clear Selection</button>
-                <a href="/approvals/check_status/2026-03" class="btn btn-assign" target="_blank">📊 Check Status</a>
+                <a href="/approvals/check_status/2026-04" class="btn btn-assign" target="_blank">📊 Check Status</a>
             </div>
             
             <div>
@@ -2441,7 +2441,7 @@ async def dashboard_home():
                 <a href="/cfo/financial_dashboard" target="_blank">💰 CFO Dashboard</a>
                 <a href="/reports/email/preview" target="_blank">📧 Email Reports</a>
                 <a href="/health" target="_blank">Health Check</a>
-                <a href="/approvals/check_status/2026-03" target="_blank">✅ Approval Status</a>
+                <a href="/approvals/check_status/2026-04" target="_blank">✅ Approval Status</a>
                 <p style="margin-top: 20px;">Finance Month-End Close AI Agent v3.0.0</p>
             </div>
         </div>
@@ -3383,7 +3383,7 @@ async def decide_approval(
     history_record['reviewer'] = reviewer
     history_record['comments'] = comments
     history_record['decision'] = 'approved' if approved else 'rejected'
-    history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-03') if item.metadata else '2026-03'
+    history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-04') if item.metadata else '2026-04'
     approval_history.append(history_record)
     
     # UPDATE REGISTRY
@@ -3476,7 +3476,7 @@ async def batch_approve(request: ApprovalBatchRequest):
             history_record['reviewer'] = request.reviewer
             history_record['comments'] = request.comments
             history_record['decision'] = 'approved' if request.approved else 'rejected'
-            history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-03') if item.metadata else '2026-03'
+            history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-04') if item.metadata else '2026-04'
             approval_history.append(history_record)
             
             # UPDATE REGISTRY
@@ -3539,7 +3539,7 @@ async def approve_all_pending(
             history_record['reviewer'] = reviewer
             history_record['comments'] = comments
             history_record['decision'] = 'approved'
-            history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-03') if item.metadata else '2026-03'
+            history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-04') if item.metadata else '2026-04'
             approval_history.append(history_record)
             
             # UPDATE REGISTRY
@@ -3603,7 +3603,7 @@ async def reject_all_pending(
             history_record['reviewer'] = reviewer
             history_record['comments'] = comments
             history_record['decision'] = 'rejected'
-            history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-03') if item.metadata else '2026-03'
+            history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-04') if item.metadata else '2026-04'
             approval_history.append(history_record)
             
             # UPDATE REGISTRY
@@ -3736,7 +3736,7 @@ async def assign_approval_item(request: ApprovalAssignmentRequest):
     history_record['assigner'] = request.assigner
     history_record['assigned_to'] = request.assignee_email
     history_record['decision'] = 'assigned'
-    history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-03') if item.metadata else '2026-03'
+    history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-04') if item.metadata else '2026-04'
     approval_history.append(history_record)
     
     # Send email notification to assignee
@@ -4949,7 +4949,7 @@ def get_overdue_invoices():
                                 "days_outstanding": days_outstanding,
                                 "due_date": record['Due_Date']
                             },
-                            fiscal_period="2026-03"
+                            fiscal_period="2026-04"
                         )
                         invoice_data['approval_token'] = approval_item.token
                         invoice_data['approval_links'] = get_approval_links(approval_item.token)
@@ -4984,7 +4984,7 @@ def get_overdue_invoices():
 
 @app.get("/cfo/financial_dashboard", response_class=HTMLResponse)
 async def cfo_financial_dashboard(
-    fiscal_period: str = Query("2026-03", description="Fiscal period to display"),
+    fiscal_period: str = Query("2026-04", description="Fiscal period to display"),
     entity_code: str = Query("AUS01", description="Entity code")
 ):
     """
@@ -6535,7 +6535,7 @@ async def send_financial_reports(
 @app.get("/reports/email/send-test")
 async def send_test_email(
     background_tasks: BackgroundTasks,
-    fiscal_period: str = Query("2026-03"),
+    fiscal_period: str = Query("2026-04"),
     entity_code: str = Query("AUS01")
 ):
     """
@@ -6559,7 +6559,7 @@ async def send_test_email(
 
 @app.get("/reports/email/preview", response_class=HTMLResponse)
 async def preview_email_report(
-    fiscal_period: str = Query("2026-03"),
+    fiscal_period: str = Query("2026-04"),
     entity_code: str = Query("AUS01"),
     report_types: str = Query("trial_balance,income_statement,balance_sheet,ar_aging,budget_variance")
 ):
@@ -6807,11 +6807,11 @@ async def check_email_config():
 
 # Data Models
 class IntercompanyReconciliationRequest(BaseModel):
-    fiscal_period: str = Field("2026-03", description="Fiscal period for reconciliation")
+    fiscal_period: str = Field("2026-04", description="Fiscal period for reconciliation")
     entity_code: Optional[str] = Field(None, description="Filter by specific entity (optional)")
 
 class IntercompanyEliminationRequest(BaseModel):
-    fiscal_period: str = Field("2026-03", description="Fiscal period")
+    fiscal_period: str = Field("2026-04", description="Fiscal period")
     journal_ids: Optional[List[str]] = Field(None, description="Specific journal IDs to post")
     approve_all: bool = Field(False, description="Approve all pending elimination journals")
     approved_by: str = Field(..., description="Name of approver")
@@ -6998,7 +6998,7 @@ async def intercompany_reconcile(request: IntercompanyReconciliationRequest):
 
 @app.get("/tools/intercompany/transactions", response_model=ToolResponse)
 async def get_intercompany_transactions(
-    fiscal_period: str = Query("2026-03"),
+    fiscal_period: str = Query("2026-04"),
     entity: Optional[str] = Query(None, description="Filter by entity"),
     status: Optional[str] = Query(None, description="Filter by status")
 ):
@@ -7192,11 +7192,11 @@ async def resolve_intercompany_variance(request: IntercompanyVarianceResolution)
 
 # Data Models
 class AccrualsPrepaymentsRequest(BaseModel):
-    fiscal_period: str = Field("2026-03", description="Fiscal period for analysis")
+    fiscal_period: str = Field("2026-04", description="Fiscal period for analysis")
     entity_code: Optional[str] = Field(None, description="Filter by entity (optional)")
 
 class AccrualAdjustmentRequest(BaseModel):
-    fiscal_period: str = Field("2026-03", description="Fiscal period")
+    fiscal_period: str = Field("2026-04", description="Fiscal period")
     accrual_ids: List[str]
     approved_by: str
     comments: Optional[str] = None
@@ -7356,7 +7356,7 @@ async def analyze_accruals_prepayments(request: AccrualsPrepaymentsRequest):
 
 @app.get("/tools/accruals/list", response_model=ToolResponse)
 async def get_accruals(
-    fiscal_period: str = Query("2026-03"),
+    fiscal_period: str = Query("2026-04"),
     status: Optional[str] = Query(None, description="Filter by status"),
     materiality: Optional[str] = Query(None, description="Filter by materiality")
 ):
@@ -7394,7 +7394,7 @@ async def get_accruals(
 
 @app.get("/tools/prepayments/list", response_model=ToolResponse)
 async def get_prepayments(
-    fiscal_period: str = Query("2026-03"),
+    fiscal_period: str = Query("2026-04"),
     status: Optional[str] = Query(None, description="Filter by status")
 ):
     """
@@ -7507,7 +7507,7 @@ async def post_accrual_adjustments(request: AccrualAdjustmentRequest):
 
 # Data Models
 class BankReconciliationRequest(BaseModel):
-    fiscal_period: str = Field("2026-03", description="Fiscal period for reconciliation")
+    fiscal_period: str = Field("2026-04", description="Fiscal period for reconciliation")
     entity_code: Optional[str] = Field(None, description="Filter by entity (optional)")
 
 class BankReconciliationItemResolution(BaseModel):
@@ -7675,7 +7675,7 @@ async def bank_reconciliation(request: BankReconciliationRequest):
 
 @app.get("/tools/bank/items", response_model=ToolResponse)
 async def get_bank_reconciliation_items(
-    fiscal_period: str = Query("2026-03"),
+    fiscal_period: str = Query("2026-04"),
     item_type: Optional[str] = Query(None, description="Filter by item type"),
     materiality: Optional[str] = Query(None, description="Filter by materiality")
 ):
@@ -7725,7 +7725,7 @@ async def get_bank_reconciliation_items(
 
 @app.get("/tools/bank/positions", response_model=ToolResponse)
 async def get_bank_positions(
-    fiscal_period: str = Query("2026-03"),
+    fiscal_period: str = Query("2026-04"),
     entity_code: Optional[str] = Query(None, description="Filter by entity")
 ):
     """
@@ -7932,7 +7932,7 @@ async def resolve_bank_reconciliation_item(request: BankReconciliationItemResolu
 # ============================================================================
 
 @app.get("/tools/close/status", response_model=ToolResponse)
-async def get_close_status(fiscal_period: str = Query("2026-03")):
+async def get_close_status(fiscal_period: str = Query("2026-04")):
     """
     Get combined status of all close activities
     """
@@ -8044,7 +8044,7 @@ def _render_milestones_with_progress_html(milestones: Dict[str, Any]) -> str:
     
 
 @app.get("/dashboard/progress", response_class=HTMLResponse)
-async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
+async def close_progress_dashboard(fiscal_period: str = Query("2026-04")):
     """
     Comprehensive close progress dashboard that tracks all decisions and provides real-time status
     """
@@ -8679,6 +8679,7 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-03")):
                 </div>
                 <div class="period-selector">
                     <select id="periodSelect">
+                        <option value="2026-04" {'selected' if fiscal_period == '2026-04' else ''}>April 2026</option>
                         <option value="2026-03" {'selected' if fiscal_period == '2026-03' else ''}>March 2026</option>
                         <option value="2026-02" {'selected' if fiscal_period == '2026-02' else ''}>February 2026</option>
                         <option value="2026-01" {'selected' if fiscal_period == '2026-01' else ''}>January 2026</option>
@@ -9105,7 +9106,7 @@ def _render_audit_trail_html(approved_items: List[Dict], assigned_items: List[Di
 # ============================================================================
 
 @app.get("/api/close/progress")
-async def get_close_progress_api(fiscal_period: str = Query("2026-03")):
+async def get_close_progress_api(fiscal_period: str = Query("2026-04")):
     """
     CORRECTED: API endpoint to get close progress data as JSON (for auto-refresh)
     """
@@ -9124,7 +9125,7 @@ async def get_close_progress_api(fiscal_period: str = Query("2026-03")):
 # ============================================================================
 # Helper function to update milestones based on approval completion
 # ============================================================================
-def update_milestones_from_approvals(fiscal_period: str = "2026-03"):
+def update_milestones_from_approvals(fiscal_period: str = "2026-04"):
     """
     CORRECTED: Update milestone progress based on approval registry data.
     
@@ -9202,14 +9203,14 @@ def update_milestones_from_approvals(fiscal_period: str = "2026-03"):
 
 def update_progress_from_approvals():
     """Helper to update progress milestones after approvals"""
-    update_milestones_from_approvals("2026-03")
+    update_milestones_from_approvals("2026-04")
 
 
 
 # Call this periodically or when approvals are processed
 def update_progress_after_approval():
     """Call this after any approval decision to update progress"""
-    update_milestones_from_approvals("2026-03")
+    update_milestones_from_approvals("2026-04")
     logger.info("📊 Updated close progress milestones based on current state")
 
 
@@ -9228,7 +9229,7 @@ async def startup_event():
     logger.info(f"💰 CFO Dashboard: {APP_BASE_URL}/cfo/financial_dashboard")
     logger.info(f"📧 Email Reports: {APP_BASE_URL}/reports/email/preview")
     logger.info(f"📚 API Documentation: {APP_BASE_URL}/docs")
-    logger.info(f"✅ Approval Status Check: {APP_BASE_URL}/approvals/check_status/2026-03")
+    logger.info(f"✅ Approval Status Check: {APP_BASE_URL}/approvals/check_status/2026-04")
     
     # Check email configuration
     api_key = os.getenv("SENDGRID_API_KEY")
@@ -9300,6 +9301,6 @@ if __name__ == "__main__":
     print(f"📧 Email Reports: http://localhost:8000/reports/email/preview")
     print(f"📚 API Docs: http://localhost:8000/docs")
     print(f"🔍 Health Check: http://localhost:8000/health")
-    print(f"✅ Approval Status: http://localhost:8000/approvals/check_status/2026-03")
+    print(f"✅ Approval Status: http://localhost:8000/approvals/check_status/2026-04")
     print("="*60 + "\n")
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
