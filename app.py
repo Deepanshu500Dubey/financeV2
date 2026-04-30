@@ -2901,6 +2901,35 @@ async def dashboard_home():
             
             // Refresh every 10 seconds
             setInterval(loadDashboard, 10000);
+
+            
+        </script>
+        
+        
+        <!-- ========== WATSONX CHATBOT INTEGRATION ========== -->
+        <!-- Root element for the chatbot -->
+        <div id="root" style="position: fixed; bottom: 20px; right: 20px; z-index: 1000;"></div>
+        
+        <script>
+            window.wxOConfiguration = {{
+                orchestrationID: "20250731-1611-5869-4024-6e99f4269f1b_20251013-0928-4707-90f5-b7083dde17bd",
+                hostURL: "https://ap-southeast-1.dl.watson-orchestrate.ibm.com",
+                rootElementID: "root",
+                chatOptions: {{
+                    agentId: "72b7c315-0aca-47ae-99a3-87b4974e7e33", 
+                }}
+            }};
+            
+            setTimeout(function () {{
+                const script = document.createElement('script');
+                script.src = window.wxOConfiguration.hostURL + '/wxochat/wxoLoader.js?embed=true';
+                script.addEventListener('load', function () {{
+                    if (typeof wxoLoader !== 'undefined') {{
+                        wxoLoader.init();
+                    }}
+                }});
+                document.head.appendChild(script);
+            }}, 0);
         </script>
     </body>
     </html>
