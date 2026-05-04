@@ -684,7 +684,7 @@ class CloseProgressTracker:
                 'weight': 10,
                 'status': MilestoneStatus.NOT_STARTED,
                 'progress': 0.0,
-                'approval_types': []  # No specific approval types - based on general data quality
+                'approval_types': []  # Based on data quality checks
             },
             'cost_center_assignment': {
                 'name': 'Cost Center Assignment',
@@ -733,10 +733,65 @@ class CloseProgressTracker:
                 'weight': 5,
                 'status': MilestoneStatus.NOT_STARTED,
                 'progress': 0.0,
-                'approval_types': []  # All approvals must be complete
+                'approval_types': [],  # Special: based on completion of all other milestones
+                'depends_on': ['data_validation', 'cost_center_assignment', 'ar_reconciliation', 
+                            'intercompany_reconciliation', 'accruals_prepayments', 
+                            'bank_reconciliation', 'budget_variance_review']  # All preceding milestones
             }
         }
         self._load_progress()
+
+
+    def calculate_final_trial_balance_progress(self) -> float:
+        """
+        Calculate final trial balance progress based on completion of ALL other milestones.
+        
+        Logic: 
+        - Final Trial Balance should reach 100% ONLY when ALL other milestones are COMPLETED
+        - Progress increases proportionally as each milestone is completed
+        - Each completed milestone contributes its weight to the total
+        
+        Formula: sum(weight of completed milestones) / total_weight_of_all_milestones_excluding_final * 100
+        """
+        # Get all milestones EXCEPT final_trial_balance
+        other_milestones = {
+            k: v for k, v in self.milestones.items() 
+            if k != 'final_trial_balance'
+        }
+        
+        total_weight = sum(m['weight'] for m in other_milestones.values())
+        
+        if total_weight == 0:
+            return 0.0
+        
+        # Calculate completed weight (milestones with COMPLETED status)
+        completed_weight = sum(
+            m['weight'] for m in other_milestones.values() 
+            if m['status'] == MilestoneStatus.COMPLETED
+        )
+        
+        # Also count IN_PROGRESS milestones with 100% progress as completed
+        for m in other_milestones.values():
+            if m['status'] == MilestoneStatus.IN_PROGRESS and m['progress'] >= 99.9:
+                if m not in [m for m in other_milestones.values() if m['status'] == MilestoneStatus.COMPLETED]:
+                    completed_weight += m['weight']
+        
+        # Calculate progress percentage
+        progress = (completed_weight / total_weight) * 100
+        
+        # Update the final trial balance milestone
+        self.milestones['final_trial_balance']['progress'] = progress
+        
+        # Set status based on progress
+        if progress >= 99.9:
+            self.milestones['final_trial_balance']['status'] = MilestoneStatus.COMPLETED
+        elif progress > 0:
+            self.milestones['final_trial_balance']['status'] = MilestoneStatus.IN_PROGRESS
+        else:
+            self.milestones['final_trial_balance']['status'] = MilestoneStatus.NOT_STARTED
+        
+        return progress
+
     
     def _load_progress(self):
         """Load saved progress from file with backward compatibility"""
@@ -800,13 +855,16 @@ class CloseProgressTracker:
     def update_milestone_progress(self, milestone_key: str, total_items: int, pending_items: int):
         """
         Update milestone progress based on actual work items.
-        
-        CORRECT LOGIC:
-        - total_items == 0: NOT_STARTED, progress = 0
-        - pending_items == total_items: NOT_STARTED, progress = 0
-        - pending_items > 0: IN_PROGRESS, progress = ((total - pending) / total) * 100
-        - pending_items == 0 AND total_items > 0: COMPLETED, progress = 100
+        For final_trial_balance, use dependency-based calculation.
         """
+        if milestone_key == 'final_trial_balance':
+            # Special handling - calculate based on other milestones
+            self.calculate_final_trial_balance_progress()
+            self._save_progress()
+            logger.info(f"📊 Final Trial Balance progress: {self.milestones['final_trial_balance']['progress']:.1f}% "
+                    f"({self.milestones['final_trial_balance']['status'].value})")
+            return
+        
         if milestone_key not in self.milestones:
             logger.warning(f"Unknown milestone key: {milestone_key}")
             return
@@ -825,8 +883,12 @@ class CloseProgressTracker:
             self.milestones[milestone_key]['progress'] = 100.0
         
         self._save_progress()
+        
+        # After updating any milestone, recalculate final trial balance
+        self.calculate_final_trial_balance_progress()
+        
         logger.info(f"📊 Milestone '{milestone_key}': status={self.milestones[milestone_key]['status'].value}, "
-                   f"progress={self.milestones[milestone_key]['progress']:.1f}%")
+                f"progress={self.milestones[milestone_key]['progress']:.1f}%")
     
     def calculate_overall_milestone_progress(self) -> float:
         """
@@ -886,6 +948,9 @@ class CloseProgressTracker:
     
     def get_milestone_summary(self) -> Dict[str, Any]:
         """Get complete milestone summary for UI display"""
+        # Ensure final trial balance is up to date
+        self.calculate_final_trial_balance_progress()
+        
         milestones_summary = {}
         for key, milestone in self.milestones.items():
             milestones_summary[key] = {
@@ -893,7 +958,7 @@ class CloseProgressTracker:
                 'weight': milestone['weight'],
                 'status': milestone['status'].value,
                 'progress': milestone['progress'],
-                'approval_types': milestone['approval_types']
+                'approval_types': milestone.get('approval_types', [])
             }
         
         return {
@@ -909,60 +974,47 @@ progress_tracker = CloseProgressTracker()
 
 def update_milestones_from_approvals(fiscal_period: str = "2026-04"):
     """
-    CORRECTED: Update milestone progress based on approval registry data.
-    
-    Rules:
-    1. Milestone is COMPLETED ONLY IF: total_items > 0 AND pending_items == 0
-    2. If total_items == 0: milestone is NOT_STARTED
-    3. If pending_items > 0: milestone is IN_PROGRESS
+    Update milestone progress based on approval registry data.
+    Final Trial Balance is calculated from OTHER milestones, not approvals.
     """
     approval_summary = approval_registry.get_approval_summary(fiscal_period)
     by_type = approval_summary.get('by_type', {})
     
     # Process each milestone using its mapped approval types
     for milestone_key, milestone in progress_tracker.milestones.items():
+        # Skip final_trial_balance - it will be calculated separately
+        if milestone_key == 'final_trial_balance':
+            continue
+            
         approval_types = milestone.get('approval_types', [])
         
         if not approval_types:
             # Special milestones without mapped approval types
             if milestone_key == 'data_validation':
-                # Data validation: Check if any data analysis has been performed
-                # This is completed if we have generated any approvals from initial analysis
                 total_generated = approval_summary.get('total_generated', 0)
-                if total_generated > 0:
-                    # Data has been analyzed (approvals generated), check if blocking issues exist
-                    blocking_types = ['Missing Cost Center', 'AR Variance Correction', 'Invalid Account Codes']
-                    blocking_pending = sum(
-                        by_type.get(bt, {}).get('pending', 0)
-                        for bt in blocking_types
-                    )
-                    if blocking_pending == 0:
+                if total_generated == 0:
+                    progress_tracker.update_milestone_progress(milestone_key, total_items=0, pending_items=0)
+                else:
+                    blocking_types = ['Missing Cost Center', 'AR Variance Correction']
+                    total_blocking = 0
+                    pending_blocking = 0
+                    for bt in blocking_types:
+                        type_data = by_type.get(bt, {})
+                        total_blocking += type_data.get('total', 0)
+                        pending_blocking += type_data.get('pending', 0)
+                    
+                    if total_blocking == 0:
                         progress_tracker.update_milestone_progress(
                             milestone_key, 
                             total_items=total_generated,
                             pending_items=0
                         )
                     else:
-                        # Some blocking items still pending
-                        total_relevant = sum(
-                            by_type.get(bt, {}).get('total', 0)
-                            for bt in blocking_types
-                        )
                         progress_tracker.update_milestone_progress(
                             milestone_key,
-                            total_items=total_relevant if total_relevant > 0 else total_generated,
-                            pending_items=blocking_pending
+                            total_items=total_blocking,
+                            pending_items=pending_blocking
                         )
-                else:
-                    # No analysis performed yet
-                    progress_tracker.update_milestone_progress(milestone_key, total_items=0, pending_items=0)
-            
-            elif milestone_key == 'final_trial_balance':
-                # Final TB: Complete only when ALL approvals are processed
-                total_all = approval_summary.get('total_generated', 0)
-                pending_all = approval_summary.get('pending', 0)
-                progress_tracker.update_milestone_progress(milestone_key, total_items=total_all, pending_items=pending_all)
-        
         else:
             # Milestones with mapped approval types
             total_items = 0
@@ -976,10 +1028,16 @@ def update_milestones_from_approvals(fiscal_period: str = "2026-04"):
             # Update milestone progress with correct totals
             progress_tracker.update_milestone_progress(milestone_key, total_items, pending_items)
     
+    # Final Trial Balance is automatically updated via calculate_final_trial_balance_progress()
+    # which is called inside update_milestone_progress for other milestones
+    
     # Log current state
     overall = progress_tracker.calculate_overall_milestone_progress()
     current = progress_tracker.get_current_stage()
-    logger.info(f"📊 Updated milestones: overall={overall:.1f}%, current_stage={current['stage_name']} ({current['status']})")
+    final_tb_progress = progress_tracker.milestones['final_trial_balance']['progress']
+    logger.info(f"📊 Updated milestones: overall={overall:.1f}%, "
+                f"current_stage={current['stage_name']} ({current['status']}), "
+                f"final_trial_balance={final_tb_progress:.1f}%")
 
 
 def update_progress_from_approvals():
