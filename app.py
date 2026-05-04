@@ -615,7 +615,7 @@ def send_email_notification(
     """
     # Get API key from environment
     api_key = os.getenv("SENDGRID_API_KEY")
-    from_email = os.getenv("FROM_EMAIL", "deepanshu.dubey@octanesolutions.com.au")
+    from_email = os.getenv("FROM_EMAIL", "afc2702@gmail.com")
     
     if not api_key:
         logger.warning(f"⚠️ SENDGRID_API_KEY not found - simulated email to {to_email}")
@@ -1826,7 +1826,7 @@ def send_email_with_attachments(
     """
     # Get API key from environment
     api_key = os.getenv("SENDGRID_API_KEY")
-    from_email = os.getenv("FROM_EMAIL", "deepanshu.dubey@octanesolutions.com.au")
+    from_email = os.getenv("FROM_EMAIL", "afc2702@gmail.com")
     
     if not api_key:
         logger.warning("⚠️ SENDGRID_API_KEY not found in environment variables")
@@ -6815,7 +6815,7 @@ async def check_email_config():
     Check email configuration status
     """
     api_key = os.getenv("SENDGRID_API_KEY")
-    from_email = os.getenv("FROM_EMAIL", "deepanshu.dubey@octanesolutions.com.au")
+    from_email = os.getenv("FROM_EMAIL", "afc2702@gmail.com")
     
     approval_summary = approval_registry.get_approval_summary()
     
