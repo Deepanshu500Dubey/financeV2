@@ -3802,27 +3802,37 @@ async def get_assignees():
 @app.post("/approvals/assign")
 async def assign_approval_item(request: ApprovalAssignmentRequest):
     """
-    Assign an approval item to a specific person and send email notification
+    Assign an approval item to a specific person and send email notification.
+    This does NOT change the approval status - item remains PENDING until the assignee acts.
     """
     if request.token not in pending_approvals:
         raise HTTPException(status_code=404, detail="Approval token not found")
     
     item = pending_approvals[request.token]
     
-    # Update item with assignment info
+    # Store assignment info but KEEP status as PENDING (not ASSIGNED)
+    # This ensures the item still appears in pending approvals until acted upon
     item.assigned_to = request.assignee_email
     item.assigned_at = datetime.now()
-    item.status = ApprovalStatus.ASSIGNED
+    # IMPORTANT: Do NOT change status to ASSIGNED - keep as PENDING
+    # Only change status when the assignee actually approves/rejects
     
-    # UPDATE REGISTRY
-    approval_registry.update_approval_status(request.token, 'ASSIGNED')
+    # Update registry with assignment info but keep status as PENDING
+    # registry status should remain PENDING until action is taken
+    # We'll store assignment metadata separately
+    if item.metadata is None:
+        item.metadata = {}
+    item.metadata['assigned_to'] = request.assignee_email
+    item.metadata['assigned_at'] = datetime.now().isoformat()
+    item.metadata['assigned_by'] = request.assigner
     
-    # Add to history
+    # Add to history as assignment event (not approval/rejection)
     history_record = item.dict()
+    history_record['event_type'] = 'ASSIGNMENT'  # Mark as assignment, not decision
     history_record['processed_at'] = datetime.now().isoformat()
     history_record['assigner'] = request.assigner
     history_record['assigned_to'] = request.assignee_email
-    history_record['decision'] = 'assigned'
+    history_record['decision'] = 'assigned'  # Different from 'approved' or 'rejected'
     history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-04') if item.metadata else '2026-04'
     approval_history.append(history_record)
     
@@ -3830,7 +3840,7 @@ async def assign_approval_item(request: ApprovalAssignmentRequest):
     assignee_name = request.assignee_name or request.assignee_email
     subject = f"Action Required: Approval Item #{item.id} Assigned to You"
     
-    # Get approval links
+    # Get approval links - these will still work for approval/rejection
     links = get_approval_links(request.token)
     
     html_content = f"""
@@ -3842,7 +3852,9 @@ async def assign_approval_item(request: ApprovalAssignmentRequest):
             .header {{ background: #000000; color: white; padding: 20px; text-align: center; }}
             .content {{ padding: 20px; background: #f9f9f9; }}
             .button {{ display: inline-block; padding: 10px 20px; background: #000000; color: white; text-decoration: none; border-radius: 5px; margin: 10px 5px; }}
+            .button-reject {{ background: #666666; }}
             .footer {{ margin-top: 20px; font-size: 12px; color: #666; }}
+            .warning {{ background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 15px 0; }}
         </style>
     </head>
     <body>
@@ -3853,6 +3865,10 @@ async def assign_approval_item(request: ApprovalAssignmentRequest):
             <div class="content">
                 <h3>Hello {assignee_name},</h3>
                 <p>An approval item has been assigned to you by <strong>{request.assigner}</strong>.</p>
+                
+                <div class="warning">
+                    <strong>⚠️ Action Required:</strong> Please review and take action on this item.
+                </div>
                 
                 <h4>Item Details:</h4>
                 <ul>
@@ -3868,14 +3884,16 @@ async def assign_approval_item(request: ApprovalAssignmentRequest):
                 <p>{request.comments or 'No additional comments'}</p>
                 
                 <h4>Actions Required:</h4>
-                <p>Please review this item and take appropriate action:</p>
+                <p>Please review this item and take appropriate action by clicking one of the buttons below:</p>
                 <p>
                     <a href="{links['approve_url']}" class="button">✅ Approve</a>
-                    <a href="{links['reject_url']}" class="button" style="background: #666666;">❌ Reject</a>
+                    <a href="{links['reject_url']}" class="button button-reject">❌ Reject</a>
                     <a href="{links['dashboard_url']}" class="button" style="background: #333333;">👤 View Details</a>
                 </p>
                 
-                <p>You can also view this item in the <a href="{APP_BASE_URL}/dashboard">Finance Dashboard</a>.</p>
+                <p><strong>Note:</strong> The close process will only progress when you approve or reject this item.</p>
+                
+                <p>You can also view all pending items in the <a href="{APP_BASE_URL}/dashboard">Finance Dashboard</a>.</p>
             </div>
             <div class="footer">
                 <p>This is an automated message from the Finance Month-End Close System.</p>
@@ -3894,13 +3912,14 @@ async def assign_approval_item(request: ApprovalAssignmentRequest):
         html_content=html_content
     )
     
-    logger.info(f"Item {item.id} assigned to {request.assignee_email} by {request.assigner}")
+    logger.info(f"Item {item.id} assigned to {request.assignee_email} by {request.assigner} - Status remains PENDING until assignee acts")
     
     return {
         "success": True,
-        "message": f"Item assigned to {assignee_name}. {email_result.get('message', '')}",
+        "message": f"Item assigned to {assignee_name}. They have been notified by email and will need to approve/reject before close can proceed. {email_result.get('message', '')}",
         "item": item.dict(),
-        "email_status": email_result
+        "email_status": email_result,
+        "note": "Item status remains PENDING. Progress will only update when the assignee approves/rejects."
     }
 
 # ============================================================================
@@ -8990,7 +9009,8 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-04")):
                 }})
                 .catch(err => console.error('Auto-refresh error:', err));
         }}, 30000);
-
+         
+        
 
         // Watsonx Chatbot Integration
         window.wxOConfiguration = {{
