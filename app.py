@@ -4,7 +4,7 @@ Provides tools for Watsonx Orchestrate integration with Dashboard Approvals
 Includes CFO Financial Dashboard and Email Reports with SendGrid
 """
 
-from tkinter import font
+
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +23,7 @@ import pandas as pd
 import logging
 import io
 import base64
+import tempfile
 import json
 
 # Email and PDF libraries
