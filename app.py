@@ -4,10 +4,13 @@ Provides tools for Watsonx Orchestrate integration with Dashboard Approvals
 Includes CFO Financial Dashboard and Email Reports with SendGrid
 """
 
+from tkinter import font
+
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from numpy import size
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timedelta
@@ -1070,7 +1073,8 @@ def analyze_close_readiness(fiscal_period: str = "2026-04") -> Dict[str, Any]:
             'description': info.get('description', ''),
             'amount': float(info.get('amount', 0)) if info.get('amount') else 0,
             'created_at': info.get('created_at', ''),
-            'metadata_summary': info.get('metadata_summary', '')
+            'metadata_summary': info.get('metadata_summary', ''),
+            'assigned_to': info.get('assigned_to', None)  # ← ADD THIS LINE
         }
         
         status = info.get('status', 'PENDING')
@@ -8270,11 +8274,20 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-04")):
     pending_html = ""
     if pending_items:
         for item in pending_items[:10]:
+            # Check if assigned_to exists and add assignee display
+            assignee_display = ""
+            assigned_to = item.get('assigned_to')
+            if assigned_to:
+                # Extract name from email or use the email
+                assignee_name = assigned_to.split('@')[0].replace('.', ' ').title()
+                assignee_display = f'<div class="pending-assignee">👤 Assigned to: {assignee_name}</div>'
+            
             pending_html += f"""
                 <div class="pending-item">
                     <div class="pending-type">{item.get('type', 'Unknown')}</div>
                     <div class="pending-desc">{item.get('description', '')[:50]}...</div>
                     <div class="pending-amount">${item.get('amount', 0):,.0f}</div>
+                    {assignee_display}
                     <a href="/dashboard/approvals/{item.get('token', '')}" class="pending-link">View →</a>
                 </div>
             """
@@ -8714,18 +8727,14 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-04")):
         /* Pending Items */
         .pending-item {{
             padding: 12px;
-            border-bottom: 1px solid #e9ecef;
+            border-bottom: none;  /* No border lines */
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
             gap: 8px;
         }}
-        
-        .pending-item:last-child {{
-            border-bottom: none;
-        }}
-        
+
         .pending-type {{
             font-weight: 600;
             font-size: 13px;
@@ -8733,25 +8742,37 @@ async def close_progress_dashboard(fiscal_period: str = Query("2026-04")):
             padding: 2px 8px;
             border-radius: 12px;
         }}
-        
+
         .pending-desc {{
             flex: 1;
             font-size: 13px;
             color: #495057;
         }}
-        
+
         .pending-amount {{
             font-weight: 600;
             font-size: 13px;
             color: #1a1a2e;
         }}
-        
+
+        .pending-assignee {{
+            font-size: 11px;
+            color: #0066cc;
+            background: #e8f4fd;
+            padding: 4px 10px;
+            border-radius: 20px;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-weight: 500;
+        }}
+
         .pending-link {{
             color: #007bff;
             text-decoration: none;
             font-size: 12px;
         }}
-        
+
         .pending-link:hover {{
             text-decoration: underline;
         }}
