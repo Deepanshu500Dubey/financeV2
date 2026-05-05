@@ -23,7 +23,6 @@ import pandas as pd
 import logging
 import io
 import base64
-import tempfile
 import json
 
 # Email and PDF libraries
