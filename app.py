@@ -3830,15 +3830,7 @@ async def assign_approval_item(request: ApprovalAssignmentRequest):
     item.metadata['assigned_at'] = datetime.now().isoformat()
     item.metadata['assigned_by'] = request.assigner
     
-    # Add to history as assignment event (not approval/rejection)
-    history_record = item.dict()
-    history_record['event_type'] = 'ASSIGNMENT'  # Mark as assignment, not decision
-    history_record['processed_at'] = datetime.now().isoformat()
-    history_record['assigner'] = request.assigner
-    history_record['assigned_to'] = request.assignee_email
-    history_record['decision'] = 'assigned'  # Different from 'approved' or 'rejected'
-    history_record['fiscal_period'] = item.metadata.get('fiscal_period', '2026-04') if item.metadata else '2026-04'
-    approval_history.append(history_record)
+    
     
     # Send email notification to assignee
     assignee_name = request.assignee_name or request.assignee_email
