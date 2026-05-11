@@ -1234,7 +1234,7 @@ def analyze_close_readiness(fiscal_period: str = "2026-04") -> Dict[str, Any]:
 
 def generate_cfo_summary(analysis: Dict[str, Any]) -> str:
     """
-    CORRECTED: Generate a plain English summary for CFO with proper progress indicators
+    Generate a professional, executive-ready CFO summary without excessive emojis
     """
     fiscal_period = analysis['fiscal_period']
     summary = analysis['summary']
@@ -1250,103 +1250,154 @@ def generate_cfo_summary(analysis: Dict[str, Any]) -> str:
     except Exception:
         period_str = fiscal_period
     
-    # Build the summary
+    # Build the summary with professional formatting
     lines = []
     
-    # Opening line with current stage
+    # Header
+    lines.append("=" * 60)
+    lines.append(f"EXECUTIVE SUMMARY - {period_str.upper()} MONTH-END CLOSE")
+    lines.append("=" * 60)
+    lines.append("")
+    
+    # Current Status
     if current_stage['status'] == 'COMPLETED':
-        lines.append(f"📊 **{period_str} Close: All Stages Complete**")
+        lines.append(f"STATUS: COMPLETED - All close activities finalized for {period_str}")
     elif current_stage['status'] == 'NOT_STARTED':
-        lines.append(f"📊 **{period_str} Close: Not Yet Started**")
+        lines.append(f"STATUS: NOT STARTED - Close process has not been initiated")
     else:
         stage_name = current_stage.get('stage_name', 'Unknown')
         stage_progress = current_stage.get('progress', 0)
-        lines.append(f"📊 **{period_str} Close: Currently at '{stage_name}' ({stage_progress:.0f}%)**")
+        lines.append(f"STATUS: IN PROGRESS - Currently at '{stage_name}' stage ({stage_progress:.0f}% complete)")
     
-    # Approval progress line
+    lines.append("")
+    
+    # Key Metrics Section
+    lines.append("KEY METRICS")
+    lines.append("-" * 40)
+    
     approval_progress = summary.get('approval_progress_percent', 0)
-    approval_status = summary.get('approval_progress_status', '')
+    milestone_progress = summary.get('milestone_progress_percent', 0)
     
     if summary.get('total_approvals_generated', 0) > 0:
-        lines.append(f"📋 **Approval Progress:** {approval_progress:.0f}% ({approval_status})")
+        lines.append(f"  Approval Resolution Rate:     {approval_progress:.0f}% ({summary.get('approval_progress_status', '')})")
     else:
-        lines.append(f"📋 **Approval Progress:** No approvals required yet")
+        lines.append(f"  Approval Resolution Rate:     Not initiated - No approvals generated")
     
-    # Milestone progress
-    milestone_progress = summary.get('milestone_progress_percent', 0)
-    lines.append(f"🎯 **Milestone Progress:** {milestone_progress:.1f}%")
+    lines.append(f"  Milestone Completion Rate:    {milestone_progress:.1f}%")
+    lines.append(f"  Total Items for Review:       {summary.get('total_approvals_generated', 0)}")
+    lines.append(f"  Items Approved:               {summary.get('approved', 0)}")
+    lines.append(f"  Items Rejected:               {summary.get('rejected', 0)}")
+    lines.append(f"  Items Pending:                {summary.get('pending', 0)}")
     
-    # Status line
-    if status == 'BLOCKED':
-        lines.append(f"🚨 **Status: BLOCKED** - Cannot proceed until critical issues are resolved.")
-    elif status == 'AT_RISK':
-        lines.append(f"⚠️ **Status: At Risk** - Close can proceed but requires immediate attention on pending items.")
-    elif status == 'READY':
-        lines.append(f"✅ **Status: Ready to Close** - All approvals processed. Final validation can proceed.")
-    elif status == 'NOT_STARTED':
-        lines.append(f"🔵 **Status: Not Started** - Run initial data assessment to begin the close process.")
-    else:
-        lines.append(f"🔄 **Status: In Progress** - Work is ongoing.")
+    if summary.get('assigned', 0) > 0:
+        lines.append(f"  Items Assigned for Review:    {summary.get('assigned', 0)}")
     
-    # Current stage details
-    if current_stage['status'] != 'COMPLETED':
-        lines.append(f"\n**📍 Current Stage:** {current_stage['stage_name']}")
-        lines.append(f"   • Status: {current_stage['status']}")
-        lines.append(f"   • Progress: {current_stage['progress']:.1f}%")
+    if summary.get('overdue', 0) > 0:
+        lines.append(f"  Overdue Items >2 Days:       {summary.get('overdue', 0)}")
     
-    # Blockers section
+    lines.append("")
+    
+    # Critical Issues Section
     if blockers:
-        lines.append(f"\n**🚫 Blockers ({len(blockers)}):**")
-        for i, blocker in enumerate(blockers[:5], 1):
-            severity_icon = "🔴" if blocker['severity'] == 'CRITICAL' else "🟠" if blocker['severity'] == 'HIGH' else "🟡"
-            lines.append(f"  {i}) {severity_icon} **{blocker['type']}** - {blocker['action']}")
+        lines.append("CRITICAL ISSUES & BLOCKERS")
+        lines.append("-" * 40)
+        
+        critical_items = [b for b in blockers if b.get('severity') in ['CRITICAL', 'HIGH']]
+        other_items = [b for b in blockers if b.get('severity') not in ['CRITICAL', 'HIGH']]
+        
+        if critical_items:
+            lines.append("  High Priority (Immediate Action Required):")
+            for i, blocker in enumerate(critical_items, 1):
+                lines.append(f"    {i}. {blocker['type']} - {blocker['action']}")
+                lines.append(f"       Impact: {blocker.get('count', 0)} item(s) affected")
+        
+        if other_items:
+            lines.append("")
+            lines.append("  Medium Priority (Requires Attention):")
+            for i, blocker in enumerate(other_items, 1):
+                lines.append(f"    {i}. {blocker['type']} - {blocker['action']}")
+                lines.append(f"       Impact: {blocker.get('count', 0)} item(s) affected")
+    else:
+        lines.append("CRITICAL ISSUES & BLOCKERS")
+        lines.append("-" * 40)
+        lines.append("  No critical issues or blockers detected.")
     
-    # Pending items summary
+    lines.append("")
+    
+    # Pending Items by Category
     if pending_by_type:
-        lines.append(f"\n**⏳ Items Pending ({summary['pending']} total):**")
-        for item_type, count in list(pending_by_type.items())[:5]:
-            lines.append(f"  • {count} × {item_type}")
+        lines.append("PENDING ITEMS BY CATEGORY")
+        lines.append("-" * 40)
+        for item_type, count in list(pending_by_type.items())[:8]:
+            lines.append(f"  {item_type:<30} {count:>3} item(s)")
+        if len(pending_by_type) > 8:
+            lines.append(f"  ... and {len(pending_by_type) - 8} additional categories")
+    lines.append("")
     
-    # Overdue items
-    if summary['overdue'] > 0:
-        lines.append(f"\n**⚠️ Overdue Items ({summary['overdue']}):**")
-        lines.append(f"  {summary['overdue']} items have been pending for more than 2 days.")
+    # Current Stage Details
+    if current_stage['status'] != 'COMPLETED':
+        lines.append("CURRENT STAGE DETAILS")
+        lines.append("-" * 40)
+        lines.append(f"  Stage:           {current_stage['stage_name']}")
+        lines.append(f"  Status:          {current_stage['status'].replace('_', ' ')}")
+        lines.append(f"  Completion:      {current_stage['progress']:.1f}%")
+        lines.append("")
     
-    # Recommended actions based on current stage
-    lines.append(f"\n**🎯 Recommended Path to Close:**")
+    # Recommended Actions
+    lines.append("RECOMMENDED ACTIONS")
+    lines.append("-" * 40)
     
     if status == 'NOT_STARTED':
-        lines.append(f"  1. **Start:** Run initial data assessment")
-        lines.append(f"  2. **Analyze:** Generate trial balance to detect exceptions")
-        lines.append(f"  3. **Process:** Review and approve detected exceptions")
+        lines.append("  1. Initiate close process by running initial data assessment")
+        lines.append("  2. Generate trial balance to identify exceptions")
+        lines.append("  3. Review and process detected exceptions")
+        lines.append("  4. Assign cost centers to unassigned transactions")
+        
     elif status == 'BLOCKED':
-        lines.append(f"  1. **Immediate:** Address {len(analysis['critical_blockers'])} critical blockers")
+        lines.append(f"  1. Address {len(analysis['critical_blockers'])} critical blocker(s) immediately:")
         for i, blocker in enumerate(analysis['critical_blockers'][:3], 1):
             lines.append(f"     - {blocker['action']}")
-        lines.append(f"  2. **Next:** Process remaining {summary['pending']} pending approvals")
-        lines.append(f"  3. **Final:** Run final trial balance validation and obtain CFO sign-off")
+        lines.append(f"  2. Process remaining {summary['pending']} pending approval(s)")
+        lines.append("  3. Complete final validation and obtain CFO sign-off")
+        
     elif status == 'AT_RISK':
-        lines.append(f"  1. **Priority:** Process {summary['pending']} pending approvals within 24 hours")
+        lines.append(f"  1. Prioritize resolution of {summary['pending']} pending item(s) within 24 hours")
         if analysis['overdue_items']:
-            lines.append(f"     - Focus on {len(analysis['overdue_items'])} overdue items first")
-        lines.append(f"  2. **Secondary:** Complete intercompany and bank reconciliations")
-        lines.append(f"  3. **Final:** Generate final statements and close the period")
-    else:
-        lines.append(f"  1. Run final trial balance validation")
-        lines.append(f"  2. Generate close summary report")
-        lines.append(f"  3. Obtain CFO sign-off and lock the period")
+            lines.append(f"     - Focus on {len(analysis['overdue_items'])} overdue item(s) exceeding 2 days")
+        lines.append("  2. Complete intercompany and bank reconciliations")
+        lines.append("  3. Generate final financial statements and close period")
+        
+    else:  # READY or other
+        lines.append("  1. Run final trial balance validation")
+        lines.append("  2. Generate close summary report")
+        lines.append("  3. Obtain CFO sign-off and lock the accounting period")
     
-    # Completed items
-    if summary['approved'] > 0:
-        lines.append(f"\n**✅ Completed Items:** {summary['approved']} approvals processed successfully.")
+    lines.append("")
     
-    # Milestone breakdown
+    # Milestone Progress
     incomplete = analysis.get('incomplete_milestones', [])
     if incomplete:
-        lines.append(f"\n**📋 Remaining Milestones ({len(incomplete)}):**")
-        for m in incomplete[:5]:
-            status_icon = "🔄" if m['status'] == 'IN_PROGRESS' else "○"
-            lines.append(f"  {status_icon} {m['name']}: {m['progress']:.0f}% ({m['status']})")
+        lines.append("REMAINING MILESTONES")
+        lines.append("-" * 40)
+        for m in incomplete[:6]:
+            status_indicator = "IN PROGRESS" if m['status'] == 'IN_PROGRESS' else "NOT STARTED"
+            lines.append(f"  • {m['name']:<30} {status_indicator:<12} {m['progress']:.0f}%")
+        if len(incomplete) > 6:
+            lines.append(f"  ... and {len(incomplete) - 6} additional milestone(s)")
+        lines.append("")
+    
+    # Completed Items Summary
+    if summary['approved'] > 0:
+        lines.append("COMPLETED ITEMS SUMMARY")
+        lines.append("-" * 40)
+        lines.append(f"  Total approved:     {summary['approved']} item(s)")
+        lines.append(f"  Total rejected:     {summary['rejected']} item(s)")
+        lines.append("")
+    
+    # Footer
+    lines.append("=" * 60)
+    lines.append(f"Report generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("=" * 60)
     
     return "\n".join(lines)
 # ============================================================================
