@@ -1,0 +1,5 @@
+IBM_BOB_Task,New_File,Rows_Added,Watsonx_Table,Primary_Join_Key,Also_Update,Purpose
+"IBM BOB 1 - Group P&L",IBMBOB_Group_PL_LineItems_Mar2026.csv,1000,group_pl_line_items_mar2026,Txn_ID,Raw_GL_Export_With_CostCenters_Mar2026_IBMBOB_Enhanced.csv,"CFO-ready P&L, margin, variance, close readiness and approval exceptions"
+"IBM BOB 2 - Workforce",IBMBOB_Workforce_Cost_Output_Mar2026.csv,1000,workforce_cost_output_mar2026,Linked_GL_Txn_ID,Raw_GL_Export_With_CostCenters_Mar2026_IBMBOB_Enhanced.csv,"Salary cost, utilisation, output, labour cost alignment and workforce risk demo"
+"IBM BOB 3 - ESG",IBMBOB_ESG_Cost_KPI_Mar2026.csv,1000,esg_cost_kpi_mar2026,Linked_GL_Txn_ID,Raw_GL_Export_With_CostCenters_Mar2026_IBMBOB_Enhanced.csv,"ESG cost attribution, leakage detection, disclosure readiness and ESG scenario demo"
+All,Raw_GL_Export_With_CostCenters_Mar2026_IBMBOB_Enhanced.csv,3000,raw_gl_export_with_costcenters_mar2026,Txn_ID,"Use this instead of original Raw_GL for import","Enhanced March 2026 GL with 3000 additional demo postings"

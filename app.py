@@ -8157,7 +8157,1304 @@ async def get_close_status(fiscal_period: str = Query("2026-04")):
     except Exception as e:
         logger.error(f"Error getting close status: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
+
+# ============================================================================
+# IBM BOB DATASET INTEGRATION - MODELS
+# ============================================================================
+
+class PLLineItemRequest(BaseModel):
+    fiscal_period: str = Field("2026-03", example="2026-03")
+    section: Optional[str] = Field(None, example="Revenue")
+
+class PLStatementResponse(BaseModel):
+    fiscal_period: str
+    revenue_total: float
+    cogs_total: float
+    gross_profit: float
+    operating_expenses_total: float
+    operating_income: float
+    other_income_expense: float
+    income_before_tax: float
+    tax_provision: float
+    net_income: float
+    items_requiring_approval: int
+    anomalies_flagged: int
+    close_readiness_percent: float
+
+class WorkforceCostRequest(BaseModel):
+    fiscal_period: str = Field("2026-03", example="2026-03")
+    business_unit: Optional[str] = Field(None, example="Finance")
+
+class WorkforceMetricsResponse(BaseModel):
+    fiscal_period: str
+    total_workforce_cost: float
+    total_revenue_supported: float
+    average_labour_cost_per_output: float
+    high_risk_items: int
+    utilisation_average: float
+    risk_flags_by_type: Dict[str, int]
+
+class ESGDataRequest(BaseModel):
+    fiscal_period: str = Field("2026-03", example="2026-03")
+    category: Optional[str] = Field(None, example="Energy usage")
+
+class ESGMetricsResponse(BaseModel):
+    fiscal_period: str
+    total_esg_spend: float
+    average_kpi_attainment: float
+    disclosure_readiness_percent: float
+    items_requiring_approval: int
+    misclassified_items: int
+    total_carbon_impact: float
+
+class IBMBOBSummaryResponse(BaseModel):
+    fiscal_period: str
+    pl_metrics: Dict[str, Any]
+    workforce_metrics: Dict[str, Any]
+    esg_metrics: Dict[str, Any]
+    total_approval_items: int
+    close_readiness_score: float
+    dashboard_url: str
+
+# ============================================================================
+# IBM BOB DATASET INTEGRATION - DATA LOADERS
+# ============================================================================
+
+IBMBOB_DATA_FILES = {
+    'pl': (
+        'IBMBOB_Group_PL_LineItems_Mar2026.csv',
+        'IBMBOB_Group_PL_LineItems_Mar2026_GENERATED.csv',
+    ),
+    'workforce': (
+        'IBMBOB_Workforce_Cost_Output_Mar2026.csv',
+        'IBMBOB_Workforce_Cost_Output_Mar2026_GENERATED.csv',
+    ),
+    'esg': (
+        'IBMBOB_ESG_Cost_KPI_Mar2026.csv',
+        'IBMBOB_ESG_Cost_KPI_Mar2026_GENERATED.csv',
+    ),
+    'enhanced_gl': (
+        'Raw_GL_Export_With_CostCenters_Mar2026_IBMBOB_Enhanced.csv',
+        'Raw_GL_Export_With_CostCenters_Mar2026_IBMBOB_Enhanced_GENERATED.csv',
+    ),
+}
+
+IBMBOB_REQUIRED_COLUMNS = {
+    'pl': [
+        'Txn_ID', 'Account_Code', 'P_L_Section', 'P_L_Line_Item', 'Category',
+        'Amount_AUD', 'Close_Readiness_Flag', 'Anomaly_Flag', 'Approval_Required', 'Fiscal_Period',
+    ],
+    'workforce': [
+        'Employee_ID', 'Business_Unit', 'Department', 'Role', 'Salary_AUD', 'Overtime_AUD',
+        'Benefits_AUD', 'Contractor_Cost_AUD', 'Total_Workforce_Cost_AUD', 'Hours_Worked',
+        'Utilisation_Percent', 'Output_Volume', 'Revenue_or_Value_Supported_AUD',
+        'Labour_Cost_Per_Output', 'Risk_Flag', 'Recommended_Action', 'Fiscal_Period',
+    ],
+    'esg': [
+        'ESG_Record_ID', 'ESG_Category', 'Spend_AUD', 'Sustainability_KPI', 'KPI_Target',
+        'KPI_Actual', 'KPI_Attainment_Percent', 'Carbon_tCO2e', 'Renewable_Source_Percent',
+        'Supplier_ESG_Score', 'Working_Capital_Impact_AUD', 'Margin_Impact_Points',
+        'Misclassification_Flag', 'Leakage_Flag', 'Disclosure_Evidence_Status',
+        'Audit_Readiness', 'Approval_Required', 'Fiscal_Period',
+    ],
+    'enhanced_gl': [
+        'Txn_ID', 'Posting_Date_Raw', 'Fiscal_Period', 'Entity', 'Account_Code_Raw',
+        'Cost_Center', 'Vendor_Name_Raw', 'Invoice_Number', 'PO_Number', 'Currency',
+        'Amount', 'Tax_Code', 'Narrative', 'Source_System',
+    ],
+}
+
+
+def resolve_ibmbob_csv_path(dataset_key: str) -> str:
+    """Prefer documentation file names; fall back to _GENERATED variants if needed."""
+    preferred, fallback = IBMBOB_DATA_FILES[dataset_key]
+    if os.path.exists(preferred):
+        return preferred
+    if os.path.exists(fallback):
+        logger.warning(
+            "IBM BOB dataset '%s': using fallback file %s (preferred %s not found)",
+            dataset_key, fallback, preferred,
+        )
+        return fallback
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            f"IBM BOB {dataset_key} dataset not found. Expected "
+            f"'{preferred}' or '{fallback}' in {os.getcwd()}"
+        ),
+    )
+
+
+def _normalize_csv_header(name: str) -> str:
+    return name.strip().lstrip('\ufeff')
+
+
+def validate_ibmbob_columns(filename: str, dataset_key: str, headers: List[str]) -> None:
+    """Raise HTTPException when required IBM BOB columns are missing."""
+    normalized = {_normalize_csv_header(h) for h in headers}
+    required = IBMBOB_REQUIRED_COLUMNS[dataset_key]
+    missing = [col for col in required if col not in normalized]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                'message': f"CSV column mismatch in {filename}",
+                'dataset': dataset_key,
+                'missing_columns': missing,
+                'found_columns': sorted(normalized),
+                'hint': 'Regenerate datasets or update IBMBOB_REQUIRED_COLUMNS in app.py',
+            },
+        )
+
+
+def load_ibmbob_csv(dataset_key: str) -> List[Dict[str, Any]]:
+    """Load an IBM BOB CSV with BOM-safe encoding and column validation."""
+    filename = resolve_ibmbob_csv_path(dataset_key)
+    data: List[Dict[str, Any]] = []
+    with open(filename, 'r', encoding='utf-8-sig') as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            raise HTTPException(status_code=422, detail=f"{filename} has no header row")
+        validate_ibmbob_columns(filename, dataset_key, list(reader.fieldnames))
+        for row in reader:
+            data.append({_normalize_csv_header(k): v for k, v in row.items()})
+    return data
+
+
+def filter_by_fiscal_period(rows: List[Dict[str, Any]], fiscal_period: str) -> List[Dict[str, Any]]:
+    return [row for row in rows if row.get('Fiscal_Period') == fiscal_period]
+
+
+def parse_utilisation_percent(value: Any, default: float = 0.0) -> float:
+    """Parse Utilisation_Percent from numeric or percentage strings (e.g. '85.4%')."""
+    if value is None or value == '':
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace('%', '').replace(',', '')
+    if not text:
+        return default
+    try:
+        return float(text)
+    except ValueError as exc:
+        raise ValueError(f"Invalid Utilisation_Percent value: {value!r}") from exc
+
+
+def parse_ibmbob_float(value: Any, default: float = 0.0) -> float:
+    if value is None or value == '':
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(',', '')
+    if not text:
+        return default
+    return float(text)
+
+
+def load_pl_data(fiscal_period: str = "2026-03") -> List[Dict[str, Any]]:
+    """Load P&L line items filtered by fiscal period"""
+    try:
+        data = load_ibmbob_csv('pl')
+        return filter_by_fiscal_period(data, fiscal_period)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error loading P&L data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error loading P&L data: {str(e)}")
+
+def load_workforce_data(fiscal_period: str = "2026-03") -> List[Dict[str, Any]]:
+    """Load workforce cost data filtered by fiscal period"""
+    try:
+        data = load_ibmbob_csv('workforce')
+        return filter_by_fiscal_period(data, fiscal_period)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error loading workforce data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error loading workforce data: {str(e)}")
+
+def load_esg_data(fiscal_period: str = "2026-03") -> List[Dict[str, Any]]:
+    """Load ESG data filtered by fiscal period"""
+    try:
+        data = load_ibmbob_csv('esg')
+        return filter_by_fiscal_period(data, fiscal_period)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error loading ESG data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error loading ESG data: {str(e)}")
+
+def load_enhanced_gl(fiscal_period: str = "2026-03") -> List[Dict[str, Any]]:
+    """Load enhanced GL for reconciliation"""
+    try:
+        data = load_ibmbob_csv('enhanced_gl')
+        return filter_by_fiscal_period(data, fiscal_period)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error loading enhanced GL: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error loading enhanced GL: {str(e)}")
+
+# ============================================================================
+# IBM BOB 1 - P&L ENDPOINTS
+# ============================================================================
+
+@app.get("/tools/pl/statement", response_model=ToolResponse)
+async def generate_pl_statement(fiscal_period: str = Query("2026-03")):
+    """
+    Generate CFO-ready Profit & Loss statement with standard sections
+    """
+    try:
+        pl_data = load_pl_data(fiscal_period)
+        if not pl_data:
+            raise HTTPException(status_code=404, detail=f"No P&L data for period {fiscal_period}")
+        
+        # Aggregate by P&L Section
+        sections = {}
+        for row in pl_data:
+            section = row.get('P_L_Section', 'Other')
+            amount = float(row.get('Amount_AUD', 0))
+            if section not in sections:
+                sections[section] = {'total': 0, 'items': 0, 'line_items': []}
+            sections[section]['total'] += amount
+            sections[section]['items'] += 1
+            sections[section]['line_items'].append({
+                'description': row.get('P_L_Line_Item'),
+                'account_code': row.get('Account_Code'),
+                'amount': amount,
+                'anomaly_flag': row.get('Anomaly_Flag'),
+                'approval_required': row.get('Approval_Required')
+            })
+        
+        # Calculate P&L totals
+        revenue = sections.get('Revenue', {}).get('total', 0)
+        cogs = sections.get('Cost of revenue', {}).get('total', 0)
+        gross_profit = revenue - cogs
+        op_expenses = sections.get('Operating expenses', {}).get('total', 0)
+        operating_income = gross_profit - op_expenses
+        other_income_expense = sections.get('Other income / expense', {}).get('total', 0)
+        income_before_tax = operating_income + other_income_expense
+        tax = sections.get('Taxes', {}).get('total', 0)
+        net_income = income_before_tax - tax
+        
+        # Count flags
+        approval_count = len([r for r in pl_data if r.get('Approval_Required') == 'Yes'])
+        anomaly_count = len([r for r in pl_data if r.get('Anomaly_Flag') != 'None'])
+        ready_count = len([r for r in pl_data if r.get('Close_Readiness_Flag') == 'Ready'])
+        close_readiness_percent = (ready_count / len(pl_data) * 100) if pl_data else 0
+        
+        # Create approval items for flagged entries
+        for row in pl_data:
+            if row.get('Approval_Required') == 'Yes' or row.get('Anomaly_Flag') != 'None':
+                approval = create_approval_item(
+                    item_type="P&L Line Item",
+                    description=f"{row.get('P_L_Line_Item')} ({row.get('Account_Code')})",
+                    amount=float(row.get('Amount_AUD', 0)),
+                    account=row.get('Account_Code'),
+                    metadata={
+                        'fiscal_period': fiscal_period,
+                        'txn_id': row.get('Txn_ID'),
+                        'section': row.get('P_L_Section'),
+                        'anomaly_flag': row.get('Anomaly_Flag'),
+                        'close_readiness': row.get('Close_Readiness_Flag')
+                    }
+                )
+                approval_registry.register_approval(approval.token, approval)
+        
+        statement = {
+            'fiscal_period': fiscal_period,
+            'revenue': revenue,
+            'cogs': cogs,
+            'gross_profit': gross_profit,
+            'operating_expenses': op_expenses,
+            'operating_income': operating_income,
+            'other_income_expense': other_income_expense,
+            'income_before_tax': income_before_tax,
+            'tax_provision': tax,
+            'net_income': net_income,
+            'sections': sections,
+            'approval_summary': {
+                'total_items': len(pl_data),
+                'items_requiring_approval': approval_count,
+                'anomalies_flagged': anomaly_count,
+                'close_readiness_percent': close_readiness_percent
+            }
+        }
+        
+        return ToolResponse(
+            success=True,
+            message=f"Generated P&L statement for {fiscal_period}",
+            data=statement
+        )
+    except Exception as e:
+        logger.error(f"Error generating P&L statement: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tools/pl/transactions", response_model=ToolResponse)
+async def get_pl_transactions(fiscal_period: str = Query("2026-03"), section: Optional[str] = Query(None)):
+    """Get P&L transactions filtered by section"""
+    try:
+        pl_data = load_pl_data(fiscal_period)
+        if section:
+            pl_data = [r for r in pl_data if r.get('P_L_Section') == section]
+        
+        transactions = [{
+            'txn_id': r.get('Txn_ID'),
+            'account_code': r.get('Account_Code'),
+            'line_item': r.get('P_L_Line_Item'),
+            'section': r.get('P_L_Section'),
+            'amount': float(r.get('Amount_AUD', 0)),
+            'vendor': r.get('Vendor_or_Customer'),
+            'invoice_number': r.get('Invoice_Number'),
+            'close_readiness': r.get('Close_Readiness_Flag'),
+            'anomaly_flag': r.get('Anomaly_Flag'),
+            'approval_required': r.get('Approval_Required')
+        } for r in pl_data]
+        
+        return ToolResponse(
+            success=True,
+            message=f"Retrieved {len(transactions)} P&L transactions",
+            data={'fiscal_period': fiscal_period, 'transactions': transactions}
+        )
+    except Exception as e:
+        logger.error(f"Error getting P&L transactions: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tools/pl/approval_items", response_model=ToolResponse)
+async def get_pl_approval_items(fiscal_period: str = Query("2026-03")):
+    """Get P&L items requiring CFO approval before close"""
+    try:
+        pl_data = load_pl_data(fiscal_period)
+        approval_items = [r for r in pl_data if r.get('Approval_Required') == 'Yes' or r.get('Anomaly_Flag') != 'None']
+        
+        items = [{
+            'txn_id': r.get('Txn_ID'),
+            'description': r.get('P_L_Line_Item'),
+            'amount': float(r.get('Amount_AUD', 0)),
+            'reason': f"Anomaly: {r.get('Anomaly_Flag')}" if r.get('Anomaly_Flag') != 'None' else 'Requires approval',
+            'vendor': r.get('Vendor_or_Customer'),
+            'invoice_number': r.get('Invoice_Number'),
+            'close_readiness': r.get('Close_Readiness_Flag')
+        } for r in approval_items]
+        
+        return ToolResponse(
+            success=True,
+            message=f"Found {len(items)} items requiring approval",
+            data={'fiscal_period': fiscal_period, 'approval_items': items, 'count': len(items)}
+        )
+    except Exception as e:
+        logger.error(f"Error getting P&L approval items: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tools/pl/gl_reconciliation", response_model=ToolResponse)
+async def reconcile_pl_to_gl(fiscal_period: str = Query("2026-03")):
+    """Reconcile P&L totals back to Enhanced GL"""
+    try:
+        pl_data = load_pl_data(fiscal_period)
+        gl_data = load_enhanced_gl(fiscal_period)
+        
+        # Get P&L transactions range
+        pl_txn_ids = {r.get('Txn_ID') for r in pl_data if r.get('Txn_ID')}
+        gl_pl_records = [r for r in gl_data if r.get('Txn_ID') in pl_txn_ids]
+        
+        pl_total = sum(parse_ibmbob_float(r.get('Amount_AUD')) for r in pl_data)
+        gl_total = sum(parse_ibmbob_float(r.get('Amount')) for r in gl_pl_records)
+        variance = pl_total - gl_total
+        
+        reconciliation = {
+            'fiscal_period': fiscal_period,
+            'pl_total': pl_total,
+            'gl_total': gl_total,
+            'variance': variance,
+            'variance_percent': (variance / pl_total * 100) if pl_total != 0 else 0,
+            'reconciled': abs(variance) < 0.01,  # Within 1 cent
+            'pl_record_count': len(pl_data),
+            'gl_record_count': len(gl_pl_records)
+        }
+        
+        return ToolResponse(
+            success=True,
+            message=f"GL reconciliation complete - variance: ${variance:,.2f}",
+            data=reconciliation
+        )
+    except Exception as e:
+        logger.error(f"Error reconciling P&L to GL: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tools/pl/variance_analysis", response_model=ToolResponse)
+async def analyze_pl_variances(fiscal_period: str = Query("2026-03")):
+    """Analyze variances flagged in the P&L data"""
+    try:
+        pl_data = load_pl_data(fiscal_period)
+        
+        # Categorize by anomaly type
+        variances = {}
+        for row in pl_data:
+            if row.get('Anomaly_Flag') != 'None':
+                anomaly_type = row.get('Anomaly_Flag', 'Unknown')
+                if anomaly_type not in variances:
+                    variances[anomaly_type] = {'count': 0, 'total_amount': 0, 'items': []}
+                
+                amount = float(row.get('Amount_AUD', 0))
+                variances[anomaly_type]['count'] += 1
+                variances[anomaly_type]['total_amount'] += amount
+                variances[anomaly_type]['items'].append({
+                    'txn_id': row.get('Txn_ID'),
+                    'description': row.get('P_L_Line_Item'),
+                    'amount': amount,
+                    'vendor': row.get('Vendor_or_Customer')
+                })
+        
+        return ToolResponse(
+            success=True,
+            message=f"Identified {len(variances)} variance types",
+            data={
+                'fiscal_period': fiscal_period,
+                'variance_summary': variances,
+                'total_variance_items': sum(v['count'] for v in variances.values()),
+                'total_variance_amount': sum(v['total_amount'] for v in variances.values())
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error analyzing P&L variances: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# IBM BOB 2 - WORKFORCE ENDPOINTS
+# ============================================================================
+
+@app.get("/tools/workforce/cost_revenue_correlation", response_model=ToolResponse)
+async def analyze_workforce_cost_revenue(fiscal_period: str = Query("2026-03"), business_unit: Optional[str] = Query(None)):
+    """Correlate workforce cost with revenue/output by business unit"""
+    try:
+        workforce_data = load_workforce_data(fiscal_period)
+        if business_unit:
+            workforce_data = [r for r in workforce_data if r.get('Business_Unit') == business_unit]
+        
+        # Group by business unit
+        by_bu = {}
+        for row in workforce_data:
+            bu = row.get('Business_Unit', 'Unknown')
+            cost = float(row.get('Total_Workforce_Cost_AUD', 0))
+            revenue = float(row.get('Revenue_or_Value_Supported_AUD', 0))
+            output = float(row.get('Output_Volume', 0))
+            
+            if bu not in by_bu:
+                by_bu[bu] = {'total_cost': 0, 'total_revenue': 0, 'total_output': 0, 'count': 0, 'items': []}
+            
+            by_bu[bu]['total_cost'] += cost
+            by_bu[bu]['total_revenue'] += revenue
+            by_bu[bu]['total_output'] += output
+            by_bu[bu]['count'] += 1
+            by_bu[bu]['items'].append({
+                'employee_id': row.get('Employee_ID'),
+                'role': row.get('Role'),
+                'cost': cost,
+                'revenue_supported': revenue,
+                'output_volume': output
+            })
+        
+        # Calculate metrics
+        correlations = {}
+        for bu, data in by_bu.items():
+            correlations[bu] = {
+                'total_workforce_cost': data['total_cost'],
+                'total_revenue_supported': data['total_revenue'],
+                'total_output_volume': data['total_output'],
+                'cost_per_revenue': data['total_cost'] / data['total_revenue'] if data['total_revenue'] > 0 else 0,
+                'revenue_per_employee': data['total_revenue'] / data['count'] if data['count'] > 0 else 0,
+                'employee_count': data['count']
+            }
+        
+        return ToolResponse(
+            success=True,
+            message=f"Analyzed cost-revenue correlation for {len(correlations)} business units",
+            data={
+                'fiscal_period': fiscal_period,
+                'by_business_unit': correlations,
+                'total_workforce_cost': sum(d['total_cost'] for d in by_bu.values()),
+                'total_revenue_supported': sum(d['total_revenue'] for d in by_bu.values())
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error analyzing workforce cost-revenue: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tools/workforce/salary_analysis", response_model=ToolResponse)
+async def analyze_salary_costs(fiscal_period: str = Query("2026-03")):
+    """Analyze salary costs by department, identify unusual patterns and compliance risks"""
+    try:
+        workforce_data = load_workforce_data(fiscal_period)
+        
+        # Group by department
+        by_dept = {}
+        risk_items = []
+        
+        for row in workforce_data:
+            dept = row.get('Department', 'Unknown')
+            salary = float(row.get('Salary_AUD', 0))
+            overtime = float(row.get('Overtime_AUD', 0))
+            contractor = float(row.get('Contractor_Cost_AUD', 0))
+            risk_flag = row.get('Risk_Flag')
+            
+            if dept not in by_dept:
+                by_dept[dept] = {'total_salary': 0, 'total_overtime': 0, 'total_contractor': 0, 'count': 0, 'risk_count': 0}
+            
+            by_dept[dept]['total_salary'] += salary
+            by_dept[dept]['total_overtime'] += overtime
+            by_dept[dept]['total_contractor'] += contractor
+            by_dept[dept]['count'] += 1
+            
+            if risk_flag and risk_flag != 'None':
+                by_dept[dept]['risk_count'] += 1
+                risk_items.append({
+                    'employee_id': row.get('Employee_ID'),
+                    'department': dept,
+                    'role': row.get('Role'),
+                    'risk_flag': risk_flag,
+                    'salary': salary,
+                    'overtime': overtime,
+                    'recommended_action': row.get('Recommended_Action')
+                })
+        
+        # Calculate department metrics
+        dept_analysis = {}
+        for dept, data in by_dept.items():
+            avg_salary = data['total_salary'] / data['count'] if data['count'] > 0 else 0
+            avg_overtime_percent = (data['total_overtime'] / (data['total_salary'] + data['total_overtime']) * 100) if (data['total_salary'] + data['total_overtime']) > 0 else 0
+            contractor_dependency = data['total_contractor'] / (data['total_salary'] + data['total_contractor']) if (data['total_salary'] + data['total_contractor']) > 0 else 0
+            
+            dept_analysis[dept] = {
+                'total_salary': data['total_salary'],
+                'average_salary': avg_salary,
+                'total_overtime': data['total_overtime'],
+                'overtime_percent': avg_overtime_percent,
+                'contractor_cost': data['total_contractor'],
+                'contractor_dependency_percent': contractor_dependency * 100,
+                'headcount': data['count'],
+                'risk_items': data['risk_count'],
+                'risk_percent': (data['risk_count'] / data['count'] * 100) if data['count'] > 0 else 0
+            }
+        
+        # Create approval items for high-risk entries
+        for item in risk_items:
+            if item['risk_flag']:
+                approval = create_approval_item(
+                    item_type="Workforce Risk",
+                    description=f"{item['role']} - {item['risk_flag']}",
+                    amount=None,
+                    metadata={
+                        'fiscal_period': fiscal_period,
+                        'employee_id': item['employee_id'],
+                        'department': item['department'],
+                        'risk_flag': item['risk_flag'],
+                        'recommended_action': item['recommended_action']
+                    }
+                )
+                approval_registry.register_approval(approval.token, approval)
+        
+        return ToolResponse(
+            success=True,
+            message=f"Analyzed salary costs for {len(dept_analysis)} departments",
+            data={
+                'fiscal_period': fiscal_period,
+                'by_department': dept_analysis,
+                'total_risk_items': len(risk_items),
+                'risk_items': risk_items[:20]  # Top 20 risk items
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error analyzing salary costs: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tools/workforce/cost_output_efficiency", response_model=ToolResponse)
+async def analyze_workforce_efficiency(fiscal_period: str = Query("2026-03")):
+    """Identify areas where workforce cost increases without output/utilisation improvement"""
+    try:
+        workforce_data = load_workforce_data(fiscal_period)
+        
+        # Identify inefficient entries
+        inefficient_items = []
+        for row in workforce_data:
+            cost = float(row.get('Total_Workforce_Cost_AUD', 0))
+            output = float(row.get('Output_Volume', 0))
+            utilisation = parse_utilisation_percent(row.get('Utilisation_Percent'))
+            labour_cost_per_output = parse_ibmbob_float(row.get('Labour_Cost_Per_Output'))
+            
+            # Flag low utilisation or high cost per output
+            if utilisation < 70 or labour_cost_per_output > 1000:
+                inefficient_items.append({
+                    'employee_id': row.get('Employee_ID'),
+                    'role': row.get('Role'),
+                    'business_unit': row.get('Business_Unit'),
+                    'total_cost': cost,
+                    'output_volume': output,
+                    'utilisation_percent': utilisation,
+                    'cost_per_output': labour_cost_per_output,
+                    'efficiency_score': (utilisation * 100 / 70) if utilisation > 0 else 0  # 70% is baseline
+                })
+        
+        # Group by business unit for efficiency trends
+        by_bu = {}
+        for row in workforce_data:
+            bu = row.get('Business_Unit', 'Unknown')
+            utilisation = parse_utilisation_percent(row.get('Utilisation_Percent'))
+            labour_cost_per_output = parse_ibmbob_float(row.get('Labour_Cost_Per_Output'))
+            
+            if bu not in by_bu:
+                by_bu[bu] = {'total_cost': 0, 'total_output': 0, 'avg_utilisation': 0, 'count': 0}
+            
+            by_bu[bu]['total_cost'] += float(row.get('Total_Workforce_Cost_AUD', 0))
+            by_bu[bu]['total_output'] += float(row.get('Output_Volume', 0))
+            by_bu[bu]['avg_utilisation'] += utilisation
+            by_bu[bu]['count'] += 1
+        
+        # Calculate averages
+        efficiency_by_bu = {}
+        for bu, data in by_bu.items():
+            data['avg_utilisation'] = data['avg_utilisation'] / data['count'] if data['count'] > 0 else 0
+            efficiency_by_bu[bu] = {
+                'total_cost': data['total_cost'],
+                'total_output': data['total_output'],
+                'average_utilisation': data['avg_utilisation'],
+                'cost_per_output': data['total_cost'] / data['total_output'] if data['total_output'] > 0 else 0,
+                'headcount': data['count'],
+                'efficiency_rating': 'HIGH' if data['avg_utilisation'] > 85 else 'MEDIUM' if data['avg_utilisation'] > 70 else 'LOW'
+            }
+        
+        return ToolResponse(
+            success=True,
+            message=f"Identified {len(inefficient_items)} items with efficiency concerns",
+            data={
+                'fiscal_period': fiscal_period,
+                'inefficient_items': inefficient_items[:20],
+                'by_business_unit': efficiency_by_bu,
+                'total_inefficient_count': len(inefficient_items)
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error analyzing workforce efficiency: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tools/workforce/resource_optimization", response_model=ToolResponse)
+async def optimize_resource_allocation(fiscal_period: str = Query("2026-03")):
+    """Generate resource allocation recommendations to improve utilisation and margin"""
+    try:
+        workforce_data = load_workforce_data(fiscal_period)
+        
+        # Analyze by business unit and role
+        by_bu_role = {}
+        for row in workforce_data:
+            bu = row.get('Business_Unit', 'Unknown')
+            role = row.get('Role', 'Unknown')
+            key = f"{bu}_{role}"
+            
+            cost = float(row.get('Total_Workforce_Cost_AUD', 0))
+            output = float(row.get('Output_Volume', 0))
+            utilisation = parse_utilisation_percent(row.get('Utilisation_Percent'))
+            revenue = parse_ibmbob_float(row.get('Revenue_or_Value_Supported_AUD'))
+            
+            if key not in by_bu_role:
+                by_bu_role[key] = {'bu': bu, 'role': role, 'total_cost': 0, 'total_output': 0, 'total_revenue': 0, 'avg_utilisation': 0, 'count': 0}
+            
+            by_bu_role[key]['total_cost'] += cost
+            by_bu_role[key]['total_output'] += output
+            by_bu_role[key]['total_revenue'] += revenue
+            by_bu_role[key]['avg_utilisation'] += utilisation
+            by_bu_role[key]['count'] += 1
+        
+        # Calculate optimization recommendations
+        recommendations = []
+        for key, data in by_bu_role.items():
+            data['avg_utilisation'] = data['avg_utilisation'] / data['count'] if data['count'] > 0 else 0
+            cost_per_output = data['total_cost'] / data['total_output'] if data['total_output'] > 0 else 0
+            margin_per_employee = (data['total_revenue'] - data['total_cost']) / data['count'] if data['count'] > 0 else 0
+            
+            if data['avg_utilisation'] < 70:
+                recommendations.append({
+                    'business_unit': data['bu'],
+                    'role': data['role'],
+                    'issue': 'Low Utilisation',
+                    'current_utilisation': data['avg_utilisation'],
+                    'target_utilisation': 85,
+                    'potential_margin_improvement': margin_per_employee * (85 - data['avg_utilisation']) / 100,
+                    'action': 'Reallocate to higher-demand areas or consider cross-training'
+                })
+            
+            if cost_per_output > 500:
+                recommendations.append({
+                    'business_unit': data['bu'],
+                    'role': data['role'],
+                    'issue': 'High Cost Per Output',
+                    'current_cost_per_output': cost_per_output,
+                    'target_cost_per_output': 300,
+                    'potential_savings': (cost_per_output - 300) * data['total_output'],
+                    'action': 'Review processes and consider automation or outsourcing'
+                })
+        
+        return ToolResponse(
+            success=True,
+            message=f"Generated {len(recommendations)} optimization recommendations",
+            data={
+                'fiscal_period': fiscal_period,
+                'recommendations': recommendations,
+                'total_potential_margin_improvement': sum(r.get('potential_margin_improvement', 0) for r in recommendations if 'potential_margin_improvement' in r),
+                'total_potential_savings': sum(r.get('potential_savings', 0) for r in recommendations if 'potential_savings' in r)
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error optimizing resource allocation: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tools/workforce/labour_cost_metrics", response_model=ToolResponse)
+async def calculate_labour_cost_metrics(fiscal_period: str = Query("2026-03"), business_unit: Optional[str] = Query(None)):
+    """Calculate labour cost per output metrics with filtering by business unit"""
+    try:
+        workforce_data = load_workforce_data(fiscal_period)
+        if business_unit:
+            workforce_data = [r for r in workforce_data if r.get('Business_Unit') == business_unit]
+        
+        # Calculate metrics by business unit
+        by_bu = {}
+        all_metrics = []
+        
+        for row in workforce_data:
+            bu = row.get('Business_Unit', 'Unknown')
+            cost = float(row.get('Total_Workforce_Cost_AUD', 0))
+            output = float(row.get('Output_Volume', 0))
+            labour_cost_per_output = float(row.get('Labour_Cost_Per_Output', 0))
+            revenue = float(row.get('Revenue_or_Value_Supported_AUD', 0))
+            
+            if bu not in by_bu:
+                by_bu[bu] = {'total_cost': 0, 'total_output': 0, 'total_revenue': 0, 'count': 0, 'min_lc_per_output': float('inf'), 'max_lc_per_output': 0}
+            
+            by_bu[bu]['total_cost'] += cost
+            by_bu[bu]['total_output'] += output
+            by_bu[bu]['total_revenue'] += revenue
+            by_bu[bu]['count'] += 1
+            by_bu[bu]['min_lc_per_output'] = min(by_bu[bu]['min_lc_per_output'], labour_cost_per_output)
+            by_bu[bu]['max_lc_per_output'] = max(by_bu[bu]['max_lc_per_output'], labour_cost_per_output)
+            
+            all_metrics.append({
+                'employee_id': row.get('Employee_ID'),
+                'business_unit': bu,
+                'role': row.get('Role'),
+                'labour_cost_per_output': labour_cost_per_output,
+                'total_cost': cost,
+                'output_volume': output,
+                'revenue_supported': revenue
+            })
+        
+        # Calculate aggregated metrics
+        bu_metrics = {}
+        for bu, data in by_bu.items():
+            bu_metrics[bu] = {
+                'total_workforce_cost': data['total_cost'],
+                'total_output': data['total_output'],
+                'total_revenue_supported': data['total_revenue'],
+                'average_labour_cost_per_output': data['total_cost'] / data['total_output'] if data['total_output'] > 0 else 0,
+                'min_labour_cost_per_output': data['min_lc_per_output'] if data['min_lc_per_output'] != float('inf') else 0,
+                'max_labour_cost_per_output': data['max_lc_per_output'],
+                'employee_count': data['count'],
+                'revenue_per_cost': data['total_revenue'] / data['total_cost'] if data['total_cost'] > 0 else 0
+            }
+        
+        return ToolResponse(
+            success=True,
+            message=f"Calculated labour cost metrics for {len(bu_metrics)} business units",
+            data={
+                'fiscal_period': fiscal_period,
+                'by_business_unit': bu_metrics,
+                'individual_metrics': all_metrics[:50]
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error calculating labour cost metrics: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# IBM BOB 3 - ESG ENDPOINTS
+# ============================================================================
+
+@app.get("/tools/esg/leakage_detection", response_model=ToolResponse)
+async def detect_esg_leakage(fiscal_period: str = Query("2026-03")):
+    """Detect ESG cost leakage and misclassification"""
+    try:
+        esg_data = load_esg_data(fiscal_period)
+        
+        misclassified = []
+        leakage_items = []
+        
+        for row in esg_data:
+            misclass_flag = row.get('Misclassification_Flag')
+            leakage_flag = row.get('Leakage_Flag')
+            spend = float(row.get('Spend_AUD', 0))
+            
+            if misclass_flag == 'Yes':
+                misclassified.append({
+                    'esg_record_id': row.get('ESG_Record_ID'),
+                    'category': row.get('ESG_Category'),
+                    'spend': spend,
+                    'account_code': row.get('Account_Code'),
+                    'account_name': row.get('Account_Name'),
+                    'supplier': row.get('Supplier'),
+                    'issue': 'Incorrect GL coding',
+                    'recommendation': 'Reclassify to correct ESG cost center'
+                })
+            
+            if leakage_flag and leakage_flag != 'None':
+                leakage_items.append({
+                    'esg_record_id': row.get('ESG_Record_ID'),
+                    'category': row.get('ESG_Category'),
+                    'spend': spend,
+                    'leakage_description': leakage_flag,
+                    'supplier': row.get('Supplier'),
+                    'recommendation': 'Investigate and reclassify or reallocate'
+                })
+        
+        # Calculate totals
+        total_misclass_spend = sum(item['spend'] for item in misclassified)
+        total_leakage_spend = sum(item['spend'] for item in leakage_items)
+        
+        # Create approval items for misclassifications
+        for item in misclassified:
+            approval = create_approval_item(
+                item_type="ESG Misclassification",
+                description=f"Reclassify {item['category']} from {item['account_name']}",
+                amount=item['spend'],
+                metadata={
+                    'fiscal_period': fiscal_period,
+                    'esg_record_id': item['esg_record_id'],
+                    'category': item['category'],
+                    'current_account': item['account_code']
+                }
+            )
+            approval_registry.register_approval(approval.token, approval)
+        
+        return ToolResponse(
+            success=True,
+            message=f"Detected {len(misclassified)} misclassifications and {len(leakage_items)} leakage items",
+            data={
+                'fiscal_period': fiscal_period,
+                'misclassified_items': misclassified,
+                'leakage_items': leakage_items,
+                'summary': {
+                    'total_misclassified_count': len(misclassified),
+                    'total_misclassified_spend': total_misclass_spend,
+                    'total_leakage_count': len(leakage_items),
+                    'total_leakage_spend': total_leakage_spend
+                }
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error detecting ESG leakage: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tools/esg/financial_impact", response_model=ToolResponse)
+async def analyze_esg_financial_impact(fiscal_period: str = Query("2026-03")):
+    """Analyze ESG impact on working capital, margins, and cash flow"""
+    try:
+        esg_data = load_esg_data(fiscal_period)
+        
+        total_spend = 0
+        total_wc_impact = 0
+        total_margin_impact = 0
+        by_category = {}
+        
+        for row in esg_data:
+            spend = float(row.get('Spend_AUD', 0))
+            wc_impact = float(row.get('Working_Capital_Impact_AUD', 0))
+            margin_impact = float(row.get('Margin_Impact_Points', 0))
+            category = row.get('ESG_Category', 'Unknown')
+            
+            total_spend += spend
+            total_wc_impact += wc_impact
+            total_margin_impact += margin_impact
+            
+            if category not in by_category:
+                by_category[category] = {'spend': 0, 'wc_impact': 0, 'margin_impact': 0, 'count': 0}
+            
+            by_category[category]['spend'] += spend
+            by_category[category]['wc_impact'] += wc_impact
+            by_category[category]['margin_impact'] += margin_impact
+            by_category[category]['count'] += 1
+        
+        # Calculate financial metrics
+        financial_impact = {
+            'total_esg_spend': total_spend,
+            'total_working_capital_impact': total_wc_impact,
+            'total_margin_impact_basis_points': total_margin_impact,
+            'cash_flow_impact': -total_wc_impact,  # Negative WC = cash outflow
+            'by_category': {cat: {
+                'spend': data['spend'],
+                'working_capital_impact': data['wc_impact'],
+                'margin_impact_basis_points': data['margin_impact'],
+                'average_margin_impact': data['margin_impact'] / data['count'] if data['count'] > 0 else 0
+            } for cat, data in by_category.items()}
+        }
+        
+        return ToolResponse(
+            success=True,
+            message=f"Analyzed financial impact of ESG spending",
+            data={
+                'fiscal_period': fiscal_period,
+                'financial_impact': financial_impact
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error analyzing ESG financial impact: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tools/esg/disclosure_readiness", response_model=ToolResponse)
+async def assess_disclosure_readiness(fiscal_period: str = Query("2026-03")):
+    """Assess ESG disclosure readiness and auditability"""
+    try:
+        esg_data = load_esg_data(fiscal_period)
+        
+        disclosure_status_counts = {}
+        audit_readiness_counts = {}
+        missing_evidence = []
+        
+        for row in esg_data:
+            disclosure_status = row.get('Disclosure_Evidence_Status', 'Unknown')
+            audit_readiness = row.get('Audit_Readiness', 'Unknown')
+            
+            disclosure_status_counts[disclosure_status] = disclosure_status_counts.get(disclosure_status, 0) + 1
+            audit_readiness_counts[audit_readiness] = audit_readiness_counts.get(audit_readiness, 0) + 1
+            
+            if disclosure_status in ['Partial', 'Missing']:
+                missing_evidence.append({
+                    'esg_record_id': row.get('ESG_Record_ID'),
+                    'category': row.get('ESG_Category'),
+                    'spend': float(row.get('Spend_AUD', 0)),
+                    'evidence_status': disclosure_status,
+                    'audit_readiness': audit_readiness,
+                    'recommendation': 'Gather missing documentation for audit trail'
+                })
+        
+        # Calculate readiness score
+        complete_count = disclosure_status_counts.get('Complete', 0)
+        total_count = len(esg_data)
+        disclosure_readiness_percent = (complete_count / total_count * 100) if total_count > 0 else 0
+        
+        ready_count = audit_readiness_counts.get('Ready', 0)
+        audit_readiness_percent = (ready_count / total_count * 100) if total_count > 0 else 0
+        
+        # Create approval items for items not ready
+        for item in missing_evidence:
+            if item['evidence_status'] in ['Partial', 'Missing']:
+                approval = create_approval_item(
+                    item_type="ESG Disclosure",
+                    description=f"Complete disclosure for {item['category']}",
+                    amount=item['spend'],
+                    metadata={
+                        'fiscal_period': fiscal_period,
+                        'esg_record_id': item['esg_record_id'],
+                        'evidence_status': item['evidence_status'],
+                        'audit_readiness': item['audit_readiness']
+                    }
+                )
+                approval_registry.register_approval(approval.token, approval)
+        
+        return ToolResponse(
+            success=True,
+            message=f"Assessment complete - {disclosure_readiness_percent:.1f}% disclosure ready",
+            data={
+                'fiscal_period': fiscal_period,
+                'disclosure_readiness': {
+                    'complete_percent': disclosure_readiness_percent,
+                    'by_status': disclosure_status_counts
+                },
+                'audit_readiness': {
+                    'ready_percent': audit_readiness_percent,
+                    'by_status': audit_readiness_counts
+                },
+                'missing_evidence_count': len(missing_evidence),
+                'missing_evidence_items': missing_evidence[:20]
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error assessing disclosure readiness: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tools/esg/scenario_modeling", response_model=ToolResponse)
+async def model_esg_scenario(
+    fiscal_period: str = Query("2026-03"),
+    target_increase_percent: float = Query(15, ge=5, le=30)
+):
+    """Simulate sustainability target increases and model impacts on cost structure and margins"""
+    try:
+        esg_data = load_esg_data(fiscal_period)
+        
+        current_total_spend = sum(float(row.get('Spend_AUD', 0)) for row in esg_data)
+        scenario_total_spend = current_total_spend * (1 + target_increase_percent / 100)
+        spend_increase = scenario_total_spend - current_total_spend
+        
+        # Model by category
+        category_scenarios = {}
+        for row in esg_data:
+            category = row.get('ESG_Category', 'Unknown')
+            current_spend = float(row.get('Spend_AUD', 0))
+            current_kpi_attainment = float(row.get('KPI_Attainment_Percent', 100))
+            current_margin_impact = float(row.get('Margin_Impact_Points', 0))
+            
+            # Project scenario
+            scenario_spend = current_spend * (1 + target_increase_percent / 100)
+            scenario_kpi_improvement = min(current_kpi_attainment + (target_increase_percent * 0.5), 125)  # Max 125%
+            scenario_margin_impact = current_margin_impact * (target_increase_percent / 100)
+            
+            if category not in category_scenarios:
+                category_scenarios[category] = {
+                    'current_spend': 0,
+                    'scenario_spend': 0,
+                    'current_avg_kpi': 0,
+                    'scenario_avg_kpi': 0,
+                    'count': 0
+                }
+            
+            category_scenarios[category]['current_spend'] += current_spend
+            category_scenarios[category]['scenario_spend'] += scenario_spend
+            category_scenarios[category]['current_avg_kpi'] += current_kpi_attainment
+            category_scenarios[category]['scenario_avg_kpi'] += scenario_kpi_improvement
+            category_scenarios[category]['count'] += 1
+        
+        # Calculate averages
+        for cat in category_scenarios:
+            data = category_scenarios[cat]
+            data['current_avg_kpi'] = data['current_avg_kpi'] / data['count'] if data['count'] > 0 else 0
+            data['scenario_avg_kpi'] = data['scenario_avg_kpi'] / data['count'] if data['count'] > 0 else 0
+        
+        return ToolResponse(
+            success=True,
+            message=f"Modeled {target_increase_percent}% target increase scenario",
+            data={
+                'fiscal_period': fiscal_period,
+                'scenario': {
+                    'target_increase_percent': target_increase_percent,
+                    'current_total_spend': current_total_spend,
+                    'scenario_total_spend': scenario_total_spend,
+                    'spend_increase': spend_increase,
+                    'by_category': category_scenarios
+                }
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error modeling ESG scenario: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tools/esg/board_narrative", response_model=ToolResponse)
+async def generate_board_narrative(fiscal_period: str = Query("2026-03")):
+    """Generate board-ready ESG performance narrative linking outcomes to financial performance"""
+    try:
+        esg_data = load_esg_data(fiscal_period)
+        
+        # Aggregate metrics
+        total_spend = sum(float(row.get('Spend_AUD', 0)) for row in esg_data)
+        avg_kpi_attainment = sum(float(row.get('KPI_Attainment_Percent', 0)) for row in esg_data) / len(esg_data) if esg_data else 0
+        total_carbon_impact = sum(float(row.get('Carbon_tCO2e', 0)) for row in esg_data)
+        avg_renewable_percent = sum(float(row.get('Renewable_Source_Percent', 0)) for row in esg_data) / len(esg_data) if esg_data else 0
+        avg_supplier_score = sum(float(row.get('Supplier_ESG_Score', 0)) for row in esg_data) / len(esg_data) if esg_data else 0
+        total_wc_impact = sum(float(row.get('Working_Capital_Impact_AUD', 0)) for row in esg_data)
+        total_margin_impact = sum(float(row.get('Margin_Impact_Points', 0)) for row in esg_data)
+        
+        # Generate narrative
+        narrative = f"""
+ESG Performance Summary for {fiscal_period}
+
+FINANCIAL INVESTMENT:
+• Total ESG Investment: ${total_spend:,.2f}
+• Working Capital Impact: ${total_wc_impact:,.2f}
+• Margin Impact: {total_margin_impact:,.1f} basis points
+
+SUSTAINABILITY OUTCOMES:
+• Average KPI Attainment: {avg_kpi_attainment:.1f}%
+• Total Carbon Reduction: {total_carbon_impact:,.0f} tCO2e
+• Average Renewable Sourcing: {avg_renewable_percent:.1f}%
+• Supplier ESG Score Average: {avg_supplier_score:.1f}/100
+
+STRATEGIC ALIGNMENT:
+The organization has invested strategically in ESG initiatives that balance financial performance with sustainability objectives. Strong KPI attainment ({avg_kpi_attainment:.1f}%) demonstrates commitment to measurable outcomes. Supplier engagement has yielded a solid average ESG score of {avg_supplier_score:.1f}, supporting supply chain resilience. Carbon reduction of {total_carbon_impact:,.0f} tCO2e positions the company favorably for regulatory and stakeholder requirements.
+
+FINANCIAL TRADE-OFFS:
+The {total_margin_impact:,.1f} basis point margin impact reflects the intentional trade-off between near-term profitability and long-term stakeholder value creation. This measured approach ensures ESG initiatives support rather than undermine strategic financial objectives.
+
+RECOMMENDATIONS:
+1. Continue current ESG investment trajectory with focus on high-impact initiatives
+2. Enhance supplier collaboration to improve average ESG scores toward target of 90+
+3. Explore opportunities to increase renewable sourcing from {avg_renewable_percent:.1f}% to 75%
+4. Monitor margin impact and adjust initiatives to maintain alignment with financial targets
+        """.strip()
+        
+        return ToolResponse(
+            success=True,
+            message="Generated board-ready ESG narrative",
+            data={
+                'fiscal_period': fiscal_period,
+                'metrics': {
+                    'total_esg_spend': total_spend,
+                    'average_kpi_attainment': avg_kpi_attainment,
+                    'total_carbon_reduction': total_carbon_impact,
+                    'average_renewable_percent': avg_renewable_percent,
+                    'average_supplier_score': avg_supplier_score,
+                    'working_capital_impact': total_wc_impact,
+                    'margin_impact_basis_points': total_margin_impact
+                },
+                'narrative': narrative
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error generating board narrative: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tools/esg/kpi_tracking", response_model=ToolResponse)
+async def track_esg_kpis(fiscal_period: str = Query("2026-03"), category: Optional[str] = Query(None)):
+    """Track ESG KPI attainment vs targets across categories"""
+    try:
+        esg_data = load_esg_data(fiscal_period)
+        if category:
+            esg_data = [r for r in esg_data if r.get('ESG_Category') == category]
+        
+        kpi_tracking = {}
+        
+        for row in esg_data:
+            kpi_name = row.get('Sustainability_KPI', 'Unknown')
+            target = float(row.get('KPI_Target', 0)) if row.get('KPI_Target') else 0
+            actual = float(row.get('KPI_Actual', 0)) if row.get('KPI_Actual') else 0
+            attainment = float(row.get('KPI_Attainment_Percent', 0))
+            
+            if kpi_name not in kpi_tracking:
+                kpi_tracking[kpi_name] = {
+                    'count': 0,
+                    'total_target': 0,
+                    'total_actual': 0,
+                    'average_attainment': 0,
+                    'items': []
+                }
+            
+            kpi_tracking[kpi_name]['count'] += 1
+            kpi_tracking[kpi_name]['total_target'] += target
+            kpi_tracking[kpi_name]['total_actual'] += actual
+            kpi_tracking[kpi_name]['average_attainment'] += attainment
+            kpi_tracking[kpi_name]['items'].append({
+                'esg_record_id': row.get('ESG_Record_ID'),
+                'category': row.get('ESG_Category'),
+                'target': target,
+                'actual': actual,
+                'attainment_percent': attainment
+            })
+        
+        # Calculate averages
+        for kpi in kpi_tracking:
+            data = kpi_tracking[kpi]
+            data['average_attainment'] = data['average_attainment'] / data['count'] if data['count'] > 0 else 0
+            data['overall_attainment'] = (data['total_actual'] / data['total_target'] * 100) if data['total_target'] > 0 else 0
+        
+        return ToolResponse(
+            success=True,
+            message=f"Tracked {len(kpi_tracking)} KPI metrics",
+            data={
+                'fiscal_period': fiscal_period,
+                'kpi_tracking': kpi_tracking,
+                'summary': {
+                    'total_kpi_types': len(kpi_tracking),
+                    'average_attainment_percent': sum(d['average_attainment'] for d in kpi_tracking.values()) / len(kpi_tracking) if kpi_tracking else 0
+                }
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error tracking ESG KPIs: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# IBM BOB CONSOLIDATED SUMMARY ENDPOINT
+# ============================================================================
+
+@app.get("/tools/ibm_bob/summary/{fiscal_period}", response_model=ToolResponse)
+async def get_ibm_bob_summary(fiscal_period: str = "2026-03"):
+    """Get consolidated summary of all IBM BOB datasets with key metrics and readiness score"""
+    try:
+        # Load all data
+        pl_data = load_pl_data(fiscal_period)
+        workforce_data = load_workforce_data(fiscal_period)
+        esg_data = load_esg_data(fiscal_period)
+        
+        # P&L Summary
+        pl_summary = {
+            'total_items': len(pl_data),
+            'items_requiring_approval': len([r for r in pl_data if r.get('Approval_Required') == 'Yes']),
+            'anomalies_flagged': len([r for r in pl_data if r.get('Anomaly_Flag') != 'None']),
+            'close_ready': len([r for r in pl_data if r.get('Close_Readiness_Flag') == 'Ready'])
+        }
+        
+        # Workforce Summary
+        workforce_summary = {
+            'total_employees': len(workforce_data),
+            'total_workforce_cost': sum(float(r.get('Total_Workforce_Cost_AUD', 0)) for r in workforce_data),
+            'total_revenue_supported': sum(float(r.get('Revenue_or_Value_Supported_AUD', 0)) for r in workforce_data),
+            'risk_items': len([r for r in workforce_data if r.get('Risk_Flag') and r.get('Risk_Flag') != 'None']),
+            'average_utilisation': sum(parse_utilisation_percent(r.get('Utilisation_Percent')) for r in workforce_data) / len(workforce_data) if workforce_data else 0
+        }
+        
+        # ESG Summary
+        esg_summary = {
+            'total_records': len(esg_data),
+            'total_esg_spend': sum(float(r.get('Spend_AUD', 0)) for r in esg_data),
+            'items_requiring_approval': len([r for r in esg_data if r.get('Approval_Required') == 'Yes']),
+            'misclassified_items': len([r for r in esg_data if r.get('Misclassification_Flag') == 'Yes']),
+            'average_kpi_attainment': sum(float(r.get('KPI_Attainment_Percent', 0)) for r in esg_data) / len(esg_data) if esg_data else 0
+        }
+        
+        # Get approval count from registry
+        approval_summary = approval_registry.get_approval_summary(fiscal_period)
+        total_approval_items = approval_summary.get('total_generated', 0)
+        pending_approvals = approval_summary.get('pending', 0)
+        
+        # Calculate overall readiness score (0-100)
+        readiness_score = 0
+        
+        # P&L readiness: 35% weight
+        pl_readiness = (pl_summary['close_ready'] / pl_summary['total_items'] * 100) if pl_summary['total_items'] > 0 else 0
+        readiness_score += pl_readiness * 0.35
+        
+        # Workforce readiness: 25% weight (based on low risk)
+        workforce_readiness = ((pl_summary['total_items'] - pl_summary['items_requiring_approval']) / pl_summary['total_items'] * 100) if pl_summary['total_items'] > 0 else 100
+        readiness_score += workforce_readiness * 0.25
+        
+        # ESG readiness: 20% weight
+        esg_complete = len([r for r in esg_data if r.get('Disclosure_Evidence_Status') == 'Complete'])
+        esg_readiness = (esg_complete / len(esg_data) * 100) if esg_data else 0
+        readiness_score += esg_readiness * 0.20
+        
+        # Approval readiness: 20% weight (0 pending = 100%)
+        approval_readiness = 0 if pending_approvals > 0 else 100
+        readiness_score += approval_readiness * 0.20
+        
+        summary = {
+            'fiscal_period': fiscal_period,
+            'pl_metrics': pl_summary,
+            'workforce_metrics': workforce_summary,
+            'esg_metrics': esg_summary,
+            'approval_summary': {
+                'total_items_requiring_approval': total_approval_items,
+                'pending_approvals': pending_approvals,
+                'approved': approval_summary.get('approved', 0),
+                'rejected': approval_summary.get('rejected', 0)
+            },
+            'readiness_score': readiness_score,
+            'readiness_status': 'READY' if readiness_score >= 90 else 'AT_RISK' if readiness_score >= 70 else 'NOT_READY',
+            'dashboard_url': f"{APP_BASE_URL}/dashboard"
+        }
+        
+        return ToolResponse(
+            success=True,
+            message=f"Summary for {fiscal_period} - Overall readiness: {readiness_score:.1f}%",
+            data=summary
+        )
+    except Exception as e:
+        logger.error(f"Error generating IBM BOB summary: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 def _render_milestones_with_progress_html(milestones: Dict[str, Any]) -> str:
